@@ -5,7 +5,7 @@ All notable changes to upstream-jira-sync are documented here. The format follow
 [SemVer](https://semver.org/) (see CONTRIBUTING.md for what counts as
 breaking).
 
-## [Unreleased]
+## [0.1.1] - 2026-08-06
 
 ### Fixed
 
