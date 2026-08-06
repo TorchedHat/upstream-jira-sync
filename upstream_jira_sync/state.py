@@ -282,6 +282,16 @@ class SyncState:
         """Check if a GitHub Issue has already been classified."""
         return issue_url in self._data["classifications"]
 
+    def is_issue_not_claiming(self, issue_url: str) -> bool:
+        """Check if the issue's stored classification is a not_claiming
+        comment verdict with no ticket attached."""
+        entry = self._data["classifications"].get(issue_url)
+        return (
+            entry is not None
+            and entry.get("intent") == "not_claiming"
+            and not entry.get("ticket_key")
+        )
+
     def record_issue_classification(
         self, issue_url: str, intent: str, reason: str
     ) -> None:

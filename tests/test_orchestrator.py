@@ -523,6 +523,34 @@ class TestPRLinkedIssueCreation:
         assert summary.issues_created == 0
         assert state.is_issue_processed(linked.url)
 
+    def test_not_claiming_verdict_superseded_by_linked_pr(self, tmp_path):
+        linked = make_linked_issue()
+        orch, jira, state, _ = self._orch(
+            tmp_path, claim_mode="auto", linked_issues=[linked]
+        )
+        state.record_issue_classification(
+            linked.url, "not_claiming", "Comment was analysis, not a claim."
+        )
+        summary = orch.run()
+
+        jira.create_ticket.assert_called_once()
+        assert summary.issues_created == 1
+        assert not state.is_issue_not_claiming(linked.url)
+
+    def test_ticketed_classification_still_dedups_linked_pr(self, tmp_path):
+        linked = make_linked_issue()
+        orch, jira, state, _ = self._orch(
+            tmp_path, claim_mode="auto", linked_issues=[linked]
+        )
+        state.record_issue_classification(
+            linked.url, "pr_linked", "Referenced by PR #41"
+        )
+        state.set_issue_ticket(linked.url, "PROJ-7")
+        summary = orch.run()
+
+        jira.create_ticket.assert_not_called()
+        assert summary.issues_created == 0
+
 
 class TestPRTicketCreation:
     def _orch(self, tmp_path, pr, stale_pr_close_mode="auto"):

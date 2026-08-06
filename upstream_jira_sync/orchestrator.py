@@ -457,7 +457,12 @@ class SyncOrchestrator:
         summary: SyncSummary,
     ) -> None:
         for linked in pr.linked_issues:
-            if self._state.is_issue_processed(linked.url):
+            # A member PR that closing-references the issue outranks a prior
+            # not_claiming comment verdict. Every other classification still
+            # dedups.
+            if self._state.is_issue_processed(
+                linked.url
+            ) and not self._state.is_issue_not_claiming(linked.url):
                 continue
             try:
                 self._state.record_issue_classification(

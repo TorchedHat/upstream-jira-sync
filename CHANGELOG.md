@@ -5,6 +5,16 @@ All notable changes to upstream-jira-sync are documented here. The format follow
 [SemVer](https://semver.org/) (see CONTRIBUTING.md for what counts as
 breaking).
 
+## [Unreleased]
+
+### Fixed
+
+- A stored `not_claiming` comment classification no longer permanently blocks
+  ticket creation when a roster member later opens a PR that closing-references
+  the same issue. The PR is the stronger claim signal and supersedes the old
+  verdict. Every other classification still dedups, so issues are not
+  reprocessed on later runs.
+
 ## [0.1.0] - 2026-07-23
 
 ### Added
