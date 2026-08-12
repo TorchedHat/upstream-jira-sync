@@ -87,7 +87,7 @@ The framework is split from team data so it can be public and shared:
 | Repo | Visibility | Contains |
 |---|---|---|
 | **upstream-jira-sync** (this repo) | public | All code, packaged default AI prompts, tests. Zero team-specific data; CI rejects tenant literals. |
-| **your deployment repo** (from the [team template](../upstream-jira-sync-team-template)) | private | `config.yaml`, GitHub Actions workflows pinning a released framework version, secrets. No code. |
+| **your deployment repo** (from the [team template](https://github.com/TorchedHat/upstream-jira-sync/blob/main/config.example.yaml) | private | `config.yaml`, GitHub Actions workflows pinning a released framework version, secrets. No code. |
 
 Fixes and features land here and every team picks them up by bumping one
 pinned version tag. Team-specific values (Jira URL, project key, status names,
