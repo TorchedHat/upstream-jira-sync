@@ -1100,7 +1100,6 @@ class TestTeamAssignment:
         jira.set_team.assert_not_called()
 
     def test_backfill_skips_ticket_with_opt_out_label(self, tmp_path):
-        """An opted-out card keeps the labels and Team field its owner gave it."""
         orch, _, jira, _, _ = _make_orchestrator(
             tmp_path,
             config=_team_config("auto", automation_opt_out_labels=["no-automation"]),
@@ -1326,7 +1325,6 @@ class TestSprintSweep:
         assert summary.sprint_swept == 0
 
     def test_sweep_skips_ticket_with_opt_out_label(self):
-        """A human-owned card labelled off-limits is never re-added to the sprint."""
         jira = self._jira_with_sprint()
         ticket = make_ticket("PROJ-1", "Weekly status report")
         ticket.labels = ["weekly-status", "no-automation"]
@@ -1348,7 +1346,6 @@ class TestSprintSweep:
         assert summary.sprint_swept == 0
 
     def test_sweep_opt_out_match_is_case_insensitive(self):
-        """Jira labels are case-sensitive; the config must not have to match casing."""
         jira = self._jira_with_sprint()
         ticket = make_ticket("PROJ-1", "Weekly status report")
         ticket.labels = ["No-Automation"]
@@ -1367,7 +1364,6 @@ class TestSprintSweep:
         jira.add_issues_to_sprint.assert_not_called()
 
     def test_sweep_still_adds_unlabelled_ticket_when_opt_out_configured(self):
-        """Configuring the escape hatch must not exempt everything else."""
         jira = self._jira_with_sprint()
         ticket = make_ticket("PROJ-1", "Real work")
         config = _sprint_config(

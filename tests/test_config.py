@@ -243,8 +243,19 @@ class TestAppConfigLoad:
             config = AppConfig.load(path)
         assert config.automation_opt_out_labels == ["no-automation", "no-sprint"]
 
-    def test_automation_opt_out_labels_default_empty(self, tmp_path):
+    def test_automation_opt_out_labels_default_is_on(self):
+        assert make_config().automation_opt_out_labels == ["no-automation"]
+
+    def test_automation_opt_out_labels_default_applies_when_key_absent(self, tmp_path):
         path = self._write_config(tmp_path)
+        with patch.dict(os.environ, self._ENV, clear=True):
+            config = AppConfig.load(path)
+        assert config.automation_opt_out_labels == ["no-automation"]
+
+    def test_automation_opt_out_labels_explicit_empty_disables(self, tmp_path):
+        path = self._write_config(
+            tmp_path, extra_settings="  automation_opt_out_labels: []\n"
+        )
         with patch.dict(os.environ, self._ENV, clear=True):
             config = AppConfig.load(path)
         assert config.automation_opt_out_labels == []

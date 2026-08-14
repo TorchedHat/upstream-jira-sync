@@ -71,10 +71,8 @@ class JiraClient(BaseHTTPClient):
         escaped_type = _jql_escape(container_issue_type)
         self._exclude_containers = f'AND issuetype != "{escaped_type}"'
         self._only_containers = f'AND issuetype = "{escaped_type}"'
-        # Opt-out labels keep human-owned cards out of the sprint sweep. The
-        # `labels IS EMPTY` arm is required: in JQL a NOT IN predicate never
-        # matches an issue whose multi-value field is empty, so without it an
-        # unlabelled ticket would be filtered out of its own candidate pool.
+        # "labels IS EMPTY" is not redundant: JQL's NOT IN skips issues that have
+        # no labels, so without it the sweep would drop every unlabelled ticket.
         if automation_opt_out_labels:
             quoted = ", ".join(f'"{_jql_escape(x)}"' for x in automation_opt_out_labels)
             self._exclude_opt_out = (

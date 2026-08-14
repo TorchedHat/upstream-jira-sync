@@ -14,8 +14,11 @@ breaking).
   both skip a card carrying one. This gives human-owned cards that sit in an
   active status indefinitely — standing status-report issues, planning
   placeholders — a self-service way to stop being re-added to the current
-  sprint after someone removes them by hand. Defaults to empty (no change in
-  behavior until configured); matched case-insensitively.
+  sprint after someone removes them by hand. Matched case-insensitively.
+
+  Ships enabled, defaulting to `[no-automation]`, so labelling a card works
+  without any config change. Set the key to rename the label or add more (it
+  replaces the default rather than extending it), or to `[]` to disable.
 
 ## [0.1.1] - 2026-08-06
 
