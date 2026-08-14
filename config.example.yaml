@@ -80,6 +80,14 @@ settings:
   ignore_pr_labels:
     - Stale
 
+  # Jira labels that opt a card out of bot-driven metadata writes: the sprint
+  # sweep and the team label / Team field backfill both leave it alone. Add one
+  # of these labels to a human-owned card (a standing status-report issue, a
+  # planning placeholder) that sits in an active status indefinitely and would
+  # otherwise be swept into every sprint. Matched case-insensitively.
+  automation_opt_out_labels:
+    - no-automation
+
   # ── Story point estimation ────────────────────────────────────────────────
   enable_estimation: false
   # Required when enable_estimation is true (your instance's points field id):
