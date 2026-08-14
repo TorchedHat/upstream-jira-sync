@@ -24,6 +24,10 @@ DEFAULT_BOT_LOGINS: Final[tuple[str, ...]] = (
     "github-actions[bot]",
 )
 
+# On by default so every deployment gets the escape hatch. Generic name, so
+# it is not a tenant-specific default (R3).
+DEFAULT_AUTOMATION_OPT_OUT_LABELS: Final[tuple[str, ...]] = ("no-automation",)
+
 _CUSTOM_FIELD_RE = re.compile(r"^customfield_\d+$")
 _MANUAL_OVERRIDE_FIELD_RE = re.compile(
     r"^(status|summary|description|labels|assignee|customfield_\d+)$"
@@ -94,12 +98,11 @@ class AppConfig:
     # sync window, reopen a closed ticket, or reset the staleness clock.
     ignore_activity_authors: list[str] = field(default_factory=list)
     bot_logins: list[str] = field(default_factory=lambda: list(DEFAULT_BOT_LOGINS))
-    # Jira labels that opt an issue out of bot-driven metadata writes: the
-    # sprint sweep and the team label / Team field backfill both skip it.
-    # Self-service escape hatch for human-owned cards (standing status-report
-    # issues, planning placeholders) that live in an active status forever and
-    # would otherwise be re-added to every sprint. Matched case-insensitively.
-    automation_opt_out_labels: list[str] = field(default_factory=list)
+    # Label an issue with one of these and the bot stops writing metadata to it
+    # (sprint sweep, team backfill). Setting this replaces the default.
+    automation_opt_out_labels: list[str] = field(
+        default_factory=lambda: list(DEFAULT_AUTOMATION_OPT_OUT_LABELS)
+    )
 
     # Story point estimation (field required when enabled, R8)
     enable_estimation: bool = False
@@ -420,7 +423,11 @@ class AppConfig:
             ignore_pr_labels=settings.get("ignore_pr_labels") or [],
             ignore_activity_authors=settings.get("ignore_activity_authors") or [],
             bot_logins=settings.get("bot_logins", list(DEFAULT_BOT_LOGINS)) or [],
-            automation_opt_out_labels=settings.get("automation_opt_out_labels") or [],
+            automation_opt_out_labels=settings.get(
+                "automation_opt_out_labels",
+                list(DEFAULT_AUTOMATION_OPT_OUT_LABELS),
+            )
+            or [],
             enable_estimation=settings.get("enable_estimation", False),
             story_points_field=settings.get("story_points_field", ""),
             contributors_field=settings.get("contributors_field", ""),

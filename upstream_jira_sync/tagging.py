@@ -52,11 +52,10 @@ class TicketTagger:
         self._sprint_cache: object = _UNRESOLVED
 
     def _opted_out(self, ticket: JiraTicket) -> bool:
-        """True when a human has labelled this card off-limits to metadata writes.
+        """True when a label marks this card off-limits to bot writes.
 
-        Matched case-insensitively: Jira labels are case-sensitive, so relying
-        on an exact match would silently strip the protection off a card
-        labelled `No-Sprint` when the config says `no-sprint`.
+        Compared lowercased: Jira labels are case-sensitive, so `No-Automation`
+        should protect the card just as `no-automation` does.
         """
         opt_out = {x.lower() for x in self._config.automation_opt_out_labels}
         return bool(opt_out and opt_out & {x.lower() for x in ticket.labels})
@@ -265,8 +264,8 @@ class TicketTagger:
             ],
             cutoff.isoformat(),
         )
-        # The JQL already drops opted-out cards; re-checking here keeps the
-        # guarantee if a caller supplies a client built without the clause.
+        # The JQL already filters these out; re-checked so the opt-out still
+        # holds for a client built without the clause.
         to_add = [
             t
             for t in candidates

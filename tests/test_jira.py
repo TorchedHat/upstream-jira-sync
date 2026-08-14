@@ -336,7 +336,6 @@ class TestContainerTypeClauses:
             assert 'issuetype != "Theme"' in jql
 
     def test_sweep_excludes_opt_out_labels_without_dropping_unlabelled(self):
-        """A bare NOT IN would also drop issues with no labels, emptying the pool."""
         jql = self._jql_of(
             lambda c: c.get_sprint_sweep_candidates(
                 "octocat@example.com", "PROJ", ["In Progress"], "2026-06-01"
@@ -354,7 +353,6 @@ class TestContainerTypeClauses:
         assert "labels" not in jql
 
     def test_opt_out_clause_does_not_touch_pr_matching_pool(self):
-        """Opting out of metadata writes must not hide a ticket from PR matching."""
         jql = self._jql_of(
             lambda c: c.get_open_tickets("octocat@example.com", "PROJ"),
             automation_opt_out_labels=("no-automation",),
