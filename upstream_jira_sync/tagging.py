@@ -51,6 +51,16 @@ class TicketTagger:
         self._pr_files_cache: dict[str, tuple[str, ...]] = {}
         self._sprint_cache: object = _UNRESOLVED
 
+    def _opted_out(self, ticket: JiraTicket) -> bool:
+        """True when a human has labelled this card off-limits to metadata writes.
+
+        Matched case-insensitively: Jira labels are case-sensitive, so relying
+        on an exact match would silently strip the protection off a card
+        labelled `No-Sprint` when the config says `no-sprint`.
+        """
+        opt_out = {x.lower() for x in self._config.automation_opt_out_labels}
+        return bool(opt_out and opt_out & {x.lower() for x in ticket.labels})
+
     def resolve_current_sprint(self) -> SprintRef | None:
         """Native sprint object for today via date-math, memoized once per run."""
         if self._sprint_cache is not _UNRESOLVED:
@@ -141,6 +151,12 @@ class TicketTagger:
 
         for ticket in tickets:
             if ticket.team_id:
+                continue
+            if self._opted_out(ticket):
+                log.info(
+                    "  Skipping team backfill on %s: automation opt-out label",
+                    ticket.key,
+                )
                 continue
             teams = self._classify_ticket_teams(ticket)
             if not teams:
@@ -249,7 +265,13 @@ class TicketTagger:
             ],
             cutoff.isoformat(),
         )
-        to_add = [t for t in candidates if sprint.id not in t.sprint_ids]
+        # The JQL already drops opted-out cards; re-checking here keeps the
+        # guarantee if a caller supplies a client built without the clause.
+        to_add = [
+            t
+            for t in candidates
+            if sprint.id not in t.sprint_ids and not self._opted_out(t)
+        ]
         if not to_add:
             return
         if self._config.sprint_sweep_mode == "shadow":

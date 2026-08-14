@@ -42,6 +42,7 @@ class JiraClient(BaseHTTPClient):
     _exclude_containers: str = 'AND issuetype != "Epic"'
     _only_containers: str = 'AND issuetype = "Epic"'
     _open_status_clause: str = 'AND statusCategory in ("To Do", "In Progress")'
+    _exclude_opt_out: str = ""
 
     def __init__(
         self,
@@ -52,6 +53,7 @@ class JiraClient(BaseHTTPClient):
         sprint_field: str = "",
         container_issue_type: str = "Epic",
         open_status_names: tuple[str, ...] = (),
+        automation_opt_out_labels: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self._base = url.rstrip("/")
@@ -69,6 +71,15 @@ class JiraClient(BaseHTTPClient):
         escaped_type = _jql_escape(container_issue_type)
         self._exclude_containers = f'AND issuetype != "{escaped_type}"'
         self._only_containers = f'AND issuetype = "{escaped_type}"'
+        # Opt-out labels keep human-owned cards out of the sprint sweep. The
+        # `labels IS EMPTY` arm is required: in JQL a NOT IN predicate never
+        # matches an issue whose multi-value field is empty, so without it an
+        # unlabelled ticket would be filtered out of its own candidate pool.
+        if automation_opt_out_labels:
+            quoted = ", ".join(f'"{_jql_escape(x)}"' for x in automation_opt_out_labels)
+            self._exclude_opt_out = (
+                f"AND (labels IS EMPTY OR labels NOT IN ({quoted})) "
+            )
         self._transition_target_ids: dict[str, str] = {}
         self._session.auth = (email, token)
         self._session.headers.update({"Content-Type": "application/json"})
@@ -132,7 +143,8 @@ class JiraClient(BaseHTTPClient):
     ) -> list[JiraTicket]:
         """Open cards eligible for the sprint sweep: in an active status AND
         having entered it (or been created) on/after since_iso. Recency is
-        answered by Jira's indexed history, not by parsing the changelog."""
+        answered by Jira's indexed history, not by parsing the changelog.
+        Cards carrying an automation opt-out label are excluded outright."""
         email = sanitize_identifier(assignee_email, "jira_email")
         status_list = ", ".join(f'"{s}"' for s in statuses)
         jql = (
@@ -140,6 +152,7 @@ class JiraClient(BaseHTTPClient):
             f"AND status in ({status_list}) "
             f'AND (status CHANGED TO ({status_list}) AFTER "{since_iso}" '
             f'OR created >= "{since_iso}") '
+            f"{self._exclude_opt_out}"
             f"{self._exclude_containers} "
             f"ORDER BY updated DESC"
         )

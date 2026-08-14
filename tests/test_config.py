@@ -234,6 +234,21 @@ class TestAppConfigLoad:
             with pytest.raises(ValueError, match="did you mean 'enable_estimation'"):
                 AppConfig.load(path)
 
+    def test_load_automation_opt_out_labels(self, tmp_path):
+        path = self._write_config(
+            tmp_path,
+            extra_settings="  automation_opt_out_labels: [no-automation, no-sprint]\n",
+        )
+        with patch.dict(os.environ, self._ENV, clear=True):
+            config = AppConfig.load(path)
+        assert config.automation_opt_out_labels == ["no-automation", "no-sprint"]
+
+    def test_automation_opt_out_labels_default_empty(self, tmp_path):
+        path = self._write_config(tmp_path)
+        with patch.dict(os.environ, self._ENV, clear=True):
+            config = AppConfig.load(path)
+        assert config.automation_opt_out_labels == []
+
     def test_load_teams_and_merge_labels(self, tmp_path):
         path = self._write_config(
             tmp_path,

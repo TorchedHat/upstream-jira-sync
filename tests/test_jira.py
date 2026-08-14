@@ -335,6 +335,32 @@ class TestContainerTypeClauses:
             jql = self._jql_of(call, container_issue_type="Theme")
             assert 'issuetype != "Theme"' in jql
 
+    def test_sweep_excludes_opt_out_labels_without_dropping_unlabelled(self):
+        """A bare NOT IN would also drop issues with no labels, emptying the pool."""
+        jql = self._jql_of(
+            lambda c: c.get_sprint_sweep_candidates(
+                "octocat@example.com", "PROJ", ["In Progress"], "2026-06-01"
+            ),
+            automation_opt_out_labels=("no-automation", "no-sprint"),
+        )
+        assert 'labels IS EMPTY OR labels NOT IN ("no-automation", "no-sprint")' in jql
+
+    def test_sweep_has_no_label_clause_when_unconfigured(self):
+        jql = self._jql_of(
+            lambda c: c.get_sprint_sweep_candidates(
+                "octocat@example.com", "PROJ", ["In Progress"], "2026-06-01"
+            )
+        )
+        assert "labels" not in jql
+
+    def test_opt_out_clause_does_not_touch_pr_matching_pool(self):
+        """Opting out of metadata writes must not hide a ticket from PR matching."""
+        jql = self._jql_of(
+            lambda c: c.get_open_tickets("octocat@example.com", "PROJ"),
+            automation_opt_out_labels=("no-automation",),
+        )
+        assert "labels" not in jql
+
 
 class TestTransitionTicket:
     """Transitions resolve by TARGET status (to.name / cached to.id), never by

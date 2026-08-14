@@ -194,6 +194,7 @@ keys live under `settings:`. Secrets never go in this file (see
 | `poll_interval_hours` | `48` | Activity window per run; override per run with `--since-hours` |
 | `significant_comments_threshold` | `3` | CHANGES_REQUESTED review count that flips a ticket review -> in_progress |
 | `ignore_pr_labels` | `[Stale]` | Open PRs carrying any of these labels are skipped |
+| `automation_opt_out_labels` | `[]` | Jira labels that exempt a card from bot metadata writes (sprint sweep, team backfill); case-insensitive |
 
 ### Story point estimation
 
@@ -228,6 +229,16 @@ keys live under `settings:`. Secrets never go in this file (see
 | `enable_sprint_provision` | `false` | Rolling pre-creation of upcoming sprints |
 | `sprint_provision_mode` | `shadow` | `shadow` \| `auto` |
 | `sprint_provision_lookahead` | `2` | Pre-create current+1 .. current+lookahead |
+
+**Exempting a card from the sweep.** The sweep adds every open card that
+entered an active status within the lookback window, so a human-owned card that
+lives in `In Progress` indefinitely — a standing weekly status-report issue, a
+planning placeholder — is re-added each night even after someone removes it by
+hand. Label the card with any `automation_opt_out_labels` value and the sweep
+and the team backfill both skip it. Its existing sprint history is left as-is:
+past sprint values are a record of where the card has been, and the bot does
+not remove them. Removing a card from a *closed* sprint is a Jira board action,
+not something the bot controls.
 
 ### Weekly digest
 

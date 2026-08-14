@@ -5,6 +5,18 @@ All notable changes to upstream-jira-sync are documented here. The format follow
 [SemVer](https://semver.org/) (see CONTRIBUTING.md for what counts as
 breaking).
 
+## [Unreleased]
+
+### Added
+
+- `automation_opt_out_labels`: Jira labels that exempt a card from bot-driven
+  metadata writes. The sprint sweep and the team label / Team field backfill
+  both skip a card carrying one. This gives human-owned cards that sit in an
+  active status indefinitely — standing status-report issues, planning
+  placeholders — a self-service way to stop being re-added to the current
+  sprint after someone removes them by hand. Defaults to empty (no change in
+  behavior until configured); matched case-insensitively.
+
 ## [0.1.1] - 2026-08-06
 
 ### Fixed
