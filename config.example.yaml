@@ -80,6 +80,12 @@ settings:
   ignore_pr_labels:
     - Stale
 
+  # Label an issue with one of these and the bot leaves its metadata alone: no
+  # sprint sweep, no team backfill. For human-owned cards that sit in an active
+  # status forever. Defaults to [no-automation]; what you set replaces that.
+  # automation_opt_out_labels:
+  #   - no-automation
+
   # ── Story point estimation ────────────────────────────────────────────────
   enable_estimation: false
   # Required when enable_estimation is true (your instance's points field id):

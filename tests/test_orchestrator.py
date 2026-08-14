@@ -1099,6 +1099,22 @@ class TestTeamAssignment:
         jira.update_labels.assert_not_called()
         jira.set_team.assert_not_called()
 
+    def test_backfill_skips_ticket_with_opt_out_label(self, tmp_path):
+        orch, _, jira, _, _ = _make_orchestrator(
+            tmp_path,
+            config=_team_config("auto", automation_opt_out_labels=["no-automation"]),
+            team_classifier=self._classifier(["Team Alpha"]),
+        )
+        ticket = make_ticket("PROJ-1", "Weekly status report")
+        ticket.labels = ["no-automation"]
+        ticket.description = "transport reconnect backoff work"
+
+        orch._backfill_team_labels(MEMBER, [ticket], SyncSummary())
+
+        jira.update_labels.assert_not_called()
+        jira.set_team.assert_not_called()
+        assert ticket.labels == ["no-automation"]
+
     def test_backfill_shadow_no_write(self, tmp_path):
         pr = make_pr(number=42)
         orch, _, jira = self._orch(
@@ -1307,6 +1323,64 @@ class TestSprintSweep:
         summary = self._sweep(jira, [make_ticket("PROJ-1", "x")])
         assert summary.errors == 0
         assert summary.sprint_swept == 0
+
+    def test_sweep_skips_ticket_with_opt_out_label(self):
+        jira = self._jira_with_sprint()
+        ticket = make_ticket("PROJ-1", "Weekly status report")
+        ticket.labels = ["weekly-status", "no-automation"]
+        config = _sprint_config(
+            enable_sprint_sweep=True,
+            sprint_sweep_mode="auto",
+            automation_opt_out_labels=["no-automation"],
+        )
+        jira.get_sprint_sweep_candidates.return_value = [ticket]
+        tagger = TicketTagger(config=config, github=MagicMock(), jira=jira)
+        summary = SyncSummary()
+        ctx = _at_sprint_35()
+        try:
+            tagger.sweep_sprint(MEMBER, summary)
+        finally:
+            ctx.stop()
+        jira.add_issues_to_sprint.assert_not_called()
+        assert 68993 not in ticket.sprint_ids
+        assert summary.sprint_swept == 0
+
+    def test_sweep_opt_out_match_is_case_insensitive(self):
+        jira = self._jira_with_sprint()
+        ticket = make_ticket("PROJ-1", "Weekly status report")
+        ticket.labels = ["No-Automation"]
+        config = _sprint_config(
+            enable_sprint_sweep=True,
+            sprint_sweep_mode="auto",
+            automation_opt_out_labels=["no-automation"],
+        )
+        jira.get_sprint_sweep_candidates.return_value = [ticket]
+        tagger = TicketTagger(config=config, github=MagicMock(), jira=jira)
+        ctx = _at_sprint_35()
+        try:
+            tagger.sweep_sprint(MEMBER, SyncSummary())
+        finally:
+            ctx.stop()
+        jira.add_issues_to_sprint.assert_not_called()
+
+    def test_sweep_still_adds_unlabelled_ticket_when_opt_out_configured(self):
+        jira = self._jira_with_sprint()
+        ticket = make_ticket("PROJ-1", "Real work")
+        config = _sprint_config(
+            enable_sprint_sweep=True,
+            sprint_sweep_mode="auto",
+            automation_opt_out_labels=["no-automation"],
+        )
+        jira.get_sprint_sweep_candidates.return_value = [ticket]
+        tagger = TicketTagger(config=config, github=MagicMock(), jira=jira)
+        summary = SyncSummary()
+        ctx = _at_sprint_35()
+        try:
+            tagger.sweep_sprint(MEMBER, summary)
+        finally:
+            ctx.stop()
+        jira.add_issues_to_sprint.assert_called_once_with(68993, ["PROJ-1"])
+        assert summary.sprint_swept == 1
 
     def test_sweep_queries_with_cutoff_and_status_map_names(self):
         jira = self._jira_with_sprint()
