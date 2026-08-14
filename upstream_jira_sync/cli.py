@@ -194,6 +194,7 @@ def run_sync(args: argparse.Namespace) -> int:
             sprint_field=config.sprint_field,
             container_issue_type=config.container_issue_type,
             open_status_names=tuple(config.active_status_names),
+            automation_opt_out_labels=tuple(config.automation_opt_out_labels),
         ) as jira,
     ):
         if config.team_field:

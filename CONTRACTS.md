@@ -137,7 +137,8 @@ def _jql_escape(value: str) -> str
 class JiraClient(BaseHTTPClient):
     def __init__(self, url: str, email: str, token: str, *,
                  sprint_field: str = "",
-                 container_issue_type: str = "Epic") -> None
+                 container_issue_type: str = "Epic",
+                 automation_opt_out_labels: tuple[str, ...] = ()) -> None
 
     def get_open_tickets(self, assignee_email: str,
                          project_key: str | None = None) -> list[JiraTicket]
@@ -199,7 +200,13 @@ Changes:
    ticket's `status` attribute; the old code hardcoded `JiraStatus.TODO.value`.
 5. `_sprint_field` has NO default field id (R8); when empty,
    `_search_tickets` omits it from the fields list and leaves `sprint_ids` empty.
-6. Everything else (JQL shapes, remote-link backfill, changelog parsing,
+6. **`automation_opt_out_labels`** builds `_exclude_opt_out`, applied to
+   `get_sprint_sweep_candidates` only. The candidate pools that feed PR-driven
+   sync (`get_open_tickets`) deliberately do NOT carry the clause: opting out of
+   metadata writes must not make a ticket invisible to PR matching. The clause
+   is `(labels IS EMPTY OR labels NOT IN (...))` — the empty arm is load-bearing
+   because a bare JQL `NOT IN` drops issues whose field is empty.
+7. Everything else (JQL shapes, remote-link backfill, changelog parsing,
    `notifyUsers=false` on all writes) is faithful.
 
 ### upstream_jira_sync/resolver.py  (from sync/resolver.py, 61 LOC)
@@ -312,8 +319,10 @@ class TicketTagger:
     def sweep_sprint(...)                    # same shape as old
     def provision_future_sprints(self, summary: SyncSummary) -> None
 ```
-Changes: team lookups go through `upstream_jira_sync.teams` helpers with
-`self._config.teams` (R7); sprint math passes `config.sprint_length_days`;
+Changes: `_opted_out(ticket)` gates `sweep_sprint` and `backfill_team_labels`
+against `config.automation_opt_out_labels` (case-insensitive), so a labelled
+card is left alone by both; team lookups go through `upstream_jira_sync.teams`
+helpers with `self._config.teams` (R7); sprint math passes `config.sprint_length_days`;
 sweep statuses come from `config.active_status_names` /
 `config.status_name(...)` (R4). Diff-path parsing, caches, shadow/auto gating
 faithful.
