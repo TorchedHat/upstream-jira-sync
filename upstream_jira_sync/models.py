@@ -299,6 +299,7 @@ class SyncSummary:
     sprint_provisioned: int = 0
     team_assigned: int = 0
     co_authors_noted: int = 0
+    release_tagged: int = 0
     errors: int = 0
 
     def record_pr_outcome(self, outcome: PROutcome) -> None:
@@ -320,5 +321,6 @@ class SyncSummary:
             f"pr_orphaned={self.pr_orphaned} sprint_swept={self.sprint_swept} "
             f"sprint_provisioned={self.sprint_provisioned} "
             f"team_assigned={self.team_assigned} "
-            f"co_authors_noted={self.co_authors_noted} errors={self.errors}"
+            f"co_authors_noted={self.co_authors_noted} "
+            f"release_tagged={self.release_tagged} errors={self.errors}"
         )

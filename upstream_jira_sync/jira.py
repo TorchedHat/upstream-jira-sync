@@ -591,6 +591,16 @@ class JiraClient(BaseHTTPClient):
         )
         log.info("  %s: added contributor %s", ticket_key, account_id)
 
+    def set_fix_version(self, ticket_key: str, version_name: str) -> None:
+        """Set fixVersions on a ticket using the native Jira field."""
+        self._request(
+            "PUT",
+            f"{self._base}/rest/api/3/issue/{ticket_key}",
+            params=JIRA_NO_NOTIFY,
+            json={"fields": {"fixVersions": [{"name": version_name}]}},
+        )
+        log.info("  %s: set Fix version to %s", ticket_key, version_name)
+
     def set_parent(self, ticket_key: str, parent_key: str) -> None:
         """Set the parent (container issue) of an issue. notifyUsers=false."""
         self._request(
@@ -806,6 +816,9 @@ class DryRunJiraClient(JiraClient):
             ticket_key,
             field_id,
         )
+
+    def set_fix_version(self, ticket_key: str, version_name: str) -> None:
+        log.info("  [DRY RUN] Would set %s Fix version to %s", ticket_key, version_name)
 
     def set_parent(self, ticket_key: str, parent_key: str) -> None:
         log.info("  [DRY RUN] Would set %s parent to %s", ticket_key, parent_key)

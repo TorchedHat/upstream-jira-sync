@@ -22,6 +22,7 @@ _NAMESPACES: tuple[str, ...] = (
     "low_conf_pings",
     "pr_state_snapshots",
     "co_contributions",
+    "release_tags",
     "digest",
 )
 
@@ -47,6 +48,7 @@ class SyncState:
         "low_conf_pings": "pinged_at",
         "pr_state_snapshots": "observed_at",
         "co_contributions": "noted_at",
+        "release_tags": "tagged_at",
     }
 
     def __init__(self, path: str = "sync_state.json", read_only: bool = False) -> None:
@@ -164,6 +166,22 @@ class SyncState:
         self._data["estimations"][self._key(pr_url, ticket_key)] = {
             "story_points": points,
             "estimated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save()
+
+    def is_release_tagged(self, pr_url: str, ticket_key: str) -> bool:
+        """Check if a Fix version has already been set for this PR/ticket."""
+        return self._key(pr_url, ticket_key) in self._data["release_tags"]
+
+    def record_release_tag(
+        self, pr_url: str, ticket_key: str, version: str
+    ) -> None:
+        """Record that a Fix version was set. No-op in read-only mode."""
+        if self._read_only:
+            return
+        self._data["release_tags"][self._key(pr_url, ticket_key)] = {
+            "version": version,
+            "tagged_at": datetime.now(timezone.utc).isoformat(),
         }
         self._save()
 

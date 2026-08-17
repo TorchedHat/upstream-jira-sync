@@ -169,6 +169,10 @@ class AppConfig:
     low_conf_email_mode: str = "shadow"
     low_conf_email_from: str = ""
 
+    # Release version tagging (fixVersions on merged PRs)
+    enable_release_tagging: bool = False
+    release_tagging_mode: str = "shadow"
+
     _REQUIRED_FIELDS: ClassVar[list[tuple[str, str]]] = [
         ("github_repo", "settings.github_repo is missing or empty"),
         ("jira_url", "settings.jira_url is missing"),
@@ -192,6 +196,7 @@ class AppConfig:
         "team_assignment_mode",
         "rfc_epic_mode",
         "low_conf_email_mode",
+        "release_tagging_mode",
     ]
 
     # -- Derived accessors -----------------------------------------------------
@@ -473,6 +478,8 @@ class AppConfig:
             enable_low_conf_email=settings.get("enable_low_conf_email", False),
             low_conf_email_mode=settings.get("low_conf_email_mode", "shadow"),
             low_conf_email_from=settings.get("low_conf_email_from", ""),
+            enable_release_tagging=settings.get("enable_release_tagging", False),
+            release_tagging_mode=settings.get("release_tagging_mode", "shadow"),
         )
         config.validate(
             require_runtime=require_runtime, extra_errors=unknown_key_errors
@@ -545,6 +552,8 @@ _KNOWN_SETTINGS_KEYS: Final[frozenset[str]] = frozenset(
         "enable_low_conf_email",
         "low_conf_email_mode",
         "low_conf_email_from",
+        "enable_release_tagging",
+        "release_tagging_mode",
     }
 )
 

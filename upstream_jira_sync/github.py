@@ -822,6 +822,37 @@ class GitHubClient(BaseHTTPClient):
                 return True
         return False
 
+    def get_latest_release_branch(self, repo: str) -> str | None:
+        """Return the highest version from release/* branches, e.g. '2.14'.
+
+        Uses the git matching-refs API so only release branches are returned.
+        One API call. Returns None when no release branches exist.
+        """
+        try:
+            resp = self._request(
+                "GET",
+                f"{self._api_base}/repos/{repo}/git/matching-refs/heads/release/",
+            )
+        except (requests.RequestException, ValueError):
+            log.warning("  Failed to list release branches for %s", repo)
+            return None
+
+        best: tuple[tuple[int, ...], str] | None = None
+        for ref in resp.json():
+            name = ref.get("ref", "").removeprefix("refs/heads/release/")
+            parts = tuple(int(p) for p in name.split(".") if p.isdigit())
+            if not parts:
+                continue
+            if best is None or parts > best[0]:
+                best = (parts, name)
+
+        if best is None:
+            return None
+
+        version = best[1]
+        log.info("  Latest release branch: %s/release/%s", repo, version)
+        return version
+
     def get_pr_diff(self, repo: str, pr_number: int) -> str:
         """Fetch the unified diff for a PR."""
         url = f"{self._api_base}/repos/{repo}/pulls/{pr_number}"

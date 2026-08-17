@@ -106,10 +106,14 @@ class SyncOrchestrator:
             jira=jira,
             team_classifier=team_classifier,
         )
+        self._release_versions: dict[str, str] = {}
 
     def run(self) -> SyncSummary:
         """Execute a full sync pass. Returns the accumulated summary."""
         summary = SyncSummary()
+
+        if self._config.enable_release_tagging:
+            self._cache_release_branches()
 
         self._tagger.provision_future_sprints(summary)
 
@@ -705,6 +709,9 @@ class SyncOrchestrator:
                     ticket, pr, lifecycle.value, target_status.value
                 )
 
+            if pr.effectively_merged and self._config.enable_release_tagging:
+                self._tag_release_version(pr, ticket, summary)
+
             if not self._state.is_commented(pr.url, ticket.key):
                 self._jira.post_comment(
                     ticket,
@@ -1283,3 +1290,59 @@ class SyncOrchestrator:
                     exc_info=True,
                 )
                 summary.errors += 1
+
+    def _cache_release_branches(self) -> None:
+        """Populate _release_versions once per sync run: one API call per unique repo."""
+        seen: set[str] = set()
+        for repo in self._config.github_repo:
+            if repo in seen:
+                continue
+            seen.add(repo)
+            version = self._github.get_latest_release_branch(repo)
+            if version:
+                self._release_versions[repo] = version
+
+    @staticmethod
+    def _next_version(version: str) -> str:
+        """Increment the last numeric segment: '2.14' -> '2.15'."""
+        parts = version.split(".")
+        parts[-1] = str(int(parts[-1]) + 1)
+        return ".".join(parts)
+
+    def _tag_release_version(
+        self,
+        pr: PullRequest,
+        ticket: JiraTicket,
+        summary: SyncSummary,
+    ) -> None:
+        """Set Fix version on a merged PR's ticket based on the latest release branch.
+
+        Gated by release_tagging_mode (shadow/auto). Deduped via state so a ticket
+        is tagged at most once per PR.
+        """
+        repo = repo_from_github_url(pr.url)
+        current = self._release_versions.get(repo)
+        if not current:
+            return
+        if self._state.is_release_tagged(pr.url, ticket.key):
+            return
+
+        next_version = self._next_version(current)
+
+        if self._config.release_tagging_mode == "shadow":
+            log.info(
+                "  [RELEASE-SHADOW] Would tag %s with Fix version %s",
+                ticket.key,
+                next_version,
+            )
+            return
+
+        try:
+            self._jira.set_fix_version(ticket.key, next_version)
+            self._state.record_release_tag(pr.url, ticket.key, next_version)
+            summary.release_tagged += 1
+        except Exception:
+            summary.errors += 1
+            log.exception(
+                "  Failed to set Fix version on %s", ticket.key
+            )
