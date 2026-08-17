@@ -173,9 +173,7 @@ class SyncState:
         """Check if a Fix version has already been set for this PR/ticket."""
         return self._key(pr_url, ticket_key) in self._data["release_tags"]
 
-    def record_release_tag(
-        self, pr_url: str, ticket_key: str, version: str
-    ) -> None:
+    def record_release_tag(self, pr_url: str, ticket_key: str, version: str) -> None:
         """Record that a Fix version was set. No-op in read-only mode."""
         if self._read_only:
             return

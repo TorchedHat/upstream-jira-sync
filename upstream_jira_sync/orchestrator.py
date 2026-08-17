@@ -1343,6 +1343,4 @@ class SyncOrchestrator:
             summary.release_tagged += 1
         except Exception:
             summary.errors += 1
-            log.exception(
-                "  Failed to set Fix version on %s", ticket.key
-            )
+            log.exception("  Failed to set Fix version on %s", ticket.key)
