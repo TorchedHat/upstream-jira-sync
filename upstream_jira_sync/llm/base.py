@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from importlib.metadata import entry_points
 from typing import Final, Protocol, runtime_checkable
 
@@ -8,6 +9,8 @@ import requests
 
 from upstream_jira_sync.config import LLMSettings
 from upstream_jira_sync.http import BaseHTTPClient, RetryExhaustedError
+
+log = logging.getLogger(__name__)
 
 
 class LLMError(RuntimeError):
@@ -88,8 +91,9 @@ class MessagesProvider(BaseHTTPClient):
         return LLMFatalError(detail) if fatal else LLMError(detail)
 
     def _complete(self, url: str, body: dict[str, object]) -> str:
-        """POST a Messages request and return the first content block's text,
-        mapping every transport / API failure onto the LLMError hierarchy."""
+        """POST a Messages request and return the joined text of its text
+        content blocks, mapping every transport / API failure onto the
+        LLMError hierarchy."""
         try:
             resp = self._request("POST", url, json=body)
         except requests.HTTPError as exc:
@@ -101,9 +105,24 @@ class MessagesProvider(BaseHTTPClient):
                 f"{self.label} rate limit not clearing (quota exhausted?): {exc}"
             ) from exc
         try:
-            return resp.json()["content"][0]["text"].strip()
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            data = resp.json()
+            blocks = data["content"]
+            # Models with adaptive reasoning (Sonnet 5 and later) may prepend a
+            # ``thinking`` block even when thinking was not requested, so the
+            # answer is the concatenation of the text blocks, not block 0.
+            text = "".join(
+                block["text"] for block in blocks if block.get("type", "text") == "text"
+            ).strip()
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
             raise LLMError(f"{self.label} returned an unexpected body: {exc}") from exc
+        log.debug("%s usage: %s", self.label, data.get("usage"))
+        if not text:
+            kinds = [block.get("type") for block in blocks]
+            raise LLMError(
+                f"{self.label} returned no text content (blocks: {kinds}, "
+                f"stop_reason: {data.get('stop_reason')})"
+            )
+        return text
 
 
 @runtime_checkable
