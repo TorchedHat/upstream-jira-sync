@@ -465,7 +465,7 @@ def run_digest(
 
 def _ai_narrative(config: AppConfig, report: DigestReport) -> str:
     from upstream_jira_sync.ai import WeeklyDigestSummarizer
-    from upstream_jira_sync.llm import load_provider
+    from upstream_jira_sync.llm import LLMFatalError, load_provider
     from upstream_jira_sync.skill_loader import SkillLoader
 
     try:
@@ -474,6 +474,8 @@ def _ai_narrative(config: AppConfig, report: DigestReport) -> str:
             provider, SkillLoader(override_dir=config.skills_dir)
         )
         return summarizer.summarize(events_to_json(report.events))
+    except LLMFatalError:
+        raise  # bad key / model / billing: fail the run, don't post a stub
     except Exception as exc:
         log.warning(
             "AI narrative unavailable (%s); falling back to delta table only.", exc
@@ -512,14 +514,20 @@ def main() -> int:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    from upstream_jira_sync.llm import LLMFatalError
+
     config = AppConfig.load(args.config)
-    return run_digest(
-        config=config,
-        state_path=args.state,
-        days=args.days,
-        post=args.post,
-        use_ai=not args.no_ai,
-    )
+    try:
+        return run_digest(
+            config=config,
+            state_path=args.state,
+            days=args.days,
+            post=args.post,
+            use_ai=not args.no_ai,
+        )
+    except LLMFatalError as exc:
+        log.error("LLM provider unusable, aborting digest: %s", exc)
+        return 1
 
 
 if __name__ == "__main__":
