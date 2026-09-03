@@ -110,6 +110,12 @@ class MockHandler(BaseHTTPRequestHandler):
             self._json_response([{"accountId": "mock-account-id"}])
             return
 
+        # Anthropic model lookup, used by AnthropicProvider.preflight()
+        m = re.search(r"/v1/models/([^/?]+)$", self.path)
+        if m:
+            self._json_response({"type": "model", "id": m.group(1)})
+            return
+
         self._json_response({"error": "not found"}, 404)
 
     def do_POST(self) -> None:

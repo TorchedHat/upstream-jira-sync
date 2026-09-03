@@ -20,7 +20,11 @@ from upstream_jira_sync.config import AppConfig
 from upstream_jira_sync.emailer import GmailNotifier
 from upstream_jira_sync.github import GitHubClient
 from upstream_jira_sync.jira import DryRunJiraClient, JiraClient
-from upstream_jira_sync.llm.base import load_provider, provider_load_error
+from upstream_jira_sync.llm.base import (
+    LLMFatalError,
+    load_provider,
+    provider_load_error,
+)
 from upstream_jira_sync.models import DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT
 from upstream_jira_sync.orchestrator import SyncOrchestrator
 from upstream_jira_sync.override_gate import ManualOverrideGate
@@ -104,7 +108,12 @@ def main(argv: list[str] | None = None) -> None:
     """Entry point: parse args and dispatch to the selected subcommand."""
     _configure_logging()
     args = parse_args(argv)
-    code = args.func(args)
+    try:
+        code = args.func(args)
+    except LLMFatalError as exc:
+        # A misconfigured provider fails the run instead of reporting success.
+        log.error("LLM provider unusable, aborting: %s", exc)
+        sys.exit(1)
     if code:
         sys.exit(code)
 
@@ -143,6 +152,7 @@ def run_sync(args: argparse.Namespace) -> int:
         github_base_url = mock_url
 
     llm = load_provider(config.llm)
+    _preflight_llm(llm)
     skill_loader = SkillLoader(override_dir=config.skills_dir)
 
     matcher = AITicketMatcher(llm=llm, skill_loader=skill_loader)
@@ -230,6 +240,14 @@ def run_sync(args: argparse.Namespace) -> int:
 
     log.info("\nSync complete -- %s", summary)
     return 1 if summary.errors > 0 else 0
+
+
+def _preflight_llm(llm: object) -> None:
+    """Validate key + model up front when the provider supports it (free
+    endpoint, no tokens billed). Raises LLMFatalError on a misconfiguration."""
+    preflight = getattr(llm, "preflight", None)
+    if callable(preflight):
+        preflight()
 
 
 def run_check_config(args: argparse.Namespace) -> int:
@@ -389,7 +407,14 @@ def _live_checks(config: AppConfig):
             )
         return ""
 
+    def check_llm() -> str:
+        # Constructs the provider (raises if the key env var is missing) and,
+        # for providers that support it, hits the free model-lookup endpoint.
+        _preflight_llm(load_provider(config.llm))
+        return ""
+
     checks = [
+        (f"llm {config.llm.provider} model {config.llm.model}", check_llm),
         (f"jira project {config.jira_project_key}", check_project),
         ("jira statuses (status_map)", check_statuses),
         ("jira custom fields", check_fields),

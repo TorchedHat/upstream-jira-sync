@@ -12,6 +12,10 @@ from upstream_jira_sync.models import DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIME
 log = logging.getLogger(__name__)
 
 
+class RetryExhaustedError(RuntimeError):
+    """Raised when every rate-limit retry for one request came back 429."""
+
+
 class BaseHTTPClient:
     """Shared HTTP client with rate-limit retry and default timeouts."""
 
@@ -65,7 +69,9 @@ class BaseHTTPClient:
                 )
             return response
 
-        raise RuntimeError(f"Exceeded {self._MAX_RETRIES} retries for {method} {url}")
+        raise RetryExhaustedError(
+            f"Exceeded {self._MAX_RETRIES} retries for {method} {url}"
+        )
 
 
 def _without_query(url: str) -> str:
