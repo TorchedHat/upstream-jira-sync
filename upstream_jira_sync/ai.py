@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from typing import Final
 
 from upstream_jira_sync.config import TeamSpec
-from upstream_jira_sync.llm import LLMProvider
+from upstream_jira_sync.llm import LLMFatalError, LLMProvider
 from upstream_jira_sync.models import (
     MAX_COMMENT_CHARS,
     MAX_ISSUE_BODY_CHARS,
@@ -105,6 +105,8 @@ Rules:
             )
             raw = strip_markdown_fences(raw)
             result = json.loads(raw)
+        except LLMFatalError:
+            raise
         except Exception as exc:
             log.warning(
                 "  AI match failed for PR #%d (%s) -- skipping.",
@@ -232,6 +234,8 @@ Estimate provisional story points from the issue description alone. No implement
             result = json.loads(raw)
             points = int(result.get("points", 0))
             reason = result.get("reason", "")
+        except LLMFatalError:
+            raise
         except Exception as exc:
             log.warning(
                 "  Story point estimation failed for %s (%s): %s",
@@ -278,6 +282,8 @@ Body:
                 user_message=prompt,
                 max_tokens=256,
             )
+        except LLMFatalError:
+            raise
         except Exception as exc:
             log.warning("  Summarization failed (%s)", exc)
             return ""
@@ -295,6 +301,8 @@ class WeeklyDigestSummarizer(_SkillBasedAI):
                 user_message=events_json,
                 max_tokens=600,
             )
+        except LLMFatalError:
+            raise
         except Exception as exc:
             log.warning("  Digest summarization failed (%s)", exc)
             return ""
@@ -322,6 +330,8 @@ Classify this issue."""
                 max_tokens=128,
             )
             result = json.loads(strip_markdown_fences(raw))
+        except LLMFatalError:
+            raise
         except Exception as exc:
             log.warning("  RFC classification failed for %r (%s)", title[:80], exc)
             return None
@@ -352,6 +362,8 @@ Classify this comment."""
     ) -> ClaimResult:
         try:
             return self._ai_classify(issue, comment, username)
+        except LLMFatalError:
+            raise
         except Exception as exc:
             log.warning(
                 "  Claim classification failed for issue #%d (%s)",
@@ -451,6 +463,8 @@ Rules:
             )
             raw = strip_markdown_fences(raw)
             result = json.loads(raw)
+        except LLMFatalError:
+            raise
         except Exception as exc:
             log.warning(
                 "  Issue dedup check failed (%s) -- assuming not a duplicate.", exc
@@ -524,6 +538,8 @@ class TeamClassifier:
                 user_message=prompt,
                 max_tokens=256,
             )
+        except LLMFatalError:
+            raise
         except Exception as exc:
             log.warning("  TeamClassifier API call failed: %s", exc)
             return []

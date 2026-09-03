@@ -4,6 +4,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 from conftest import FakeLLM, make_issue, make_pr, make_teams, make_ticket
 from upstream_jira_sync.ai import (
     AITicketMatcher,
@@ -15,8 +16,9 @@ from upstream_jira_sync.ai import (
     TeamClassifier,
 )
 from upstream_jira_sync.config import LLMSettings
+from upstream_jira_sync.http import RetryExhaustedError
 from upstream_jira_sync.llm.anthropic import AnthropicProvider
-from upstream_jira_sync.llm.base import load_provider
+from upstream_jira_sync.llm.base import LLMError, LLMFatalError, load_provider
 from upstream_jira_sync.llm.vertex import VertexProvider
 from upstream_jira_sync.models import LinkedIssue
 from upstream_jira_sync.skill_loader import SkillLoader, is_bot_actor, is_bot_author
@@ -413,7 +415,10 @@ class TestAnthropicProvider:
         body = call.kwargs["json"]
         assert body["model"] == "test-model"
         assert body["max_tokens"] == 128
-        assert body["system"] == "sys"
+        # System prompt is sent as a cacheable block (prompt caching).
+        assert body["system"] == [
+            {"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}
+        ]
         assert body["messages"] == [{"role": "user", "content": "user msg"}]
 
     def test_base_url_reroutes(self):
@@ -424,6 +429,137 @@ class TestAnthropicProvider:
                 )
             )
         assert provider._url == "http://localhost:9999/v1/messages"
+
+
+def _api_error(
+    status: int, kind: str, message: str, *, key: str = "type"
+) -> requests.HTTPError:
+    """An HTTPError carrying a JSON error body. ``key`` is ``"type"`` for
+    Anthropic-shaped errors and ``"status"`` for Google-shaped Vertex ones."""
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json.return_value = {"error": {key: kind, "message": message}}
+    return requests.HTTPError(f"{status} error for url: x", response=resp)
+
+
+class TestAnthropicProviderErrors:
+    def _provider(self) -> AnthropicProvider:
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "key"}, clear=True):
+            provider = AnthropicProvider(
+                LLMSettings(provider="anthropic", model="claude-sonnet-5")
+            )
+        provider._session = MagicMock()
+        return provider
+
+    @pytest.mark.parametrize(
+        "status, err_type, message, hint",
+        [
+            (401, "authentication_error", "invalid x-api-key", "ANTHROPIC_API_KEY"),
+            (403, "permission_error", "no access", "ANTHROPIC_API_KEY"),
+            (404, "not_found_error", "model: nope", "llm.model="),
+            (400, "invalid_request_error", "Your credit balance is too low", "credit"),
+        ],
+    )
+    def test_fatal_statuses_raise_fatal_with_api_message(
+        self, status, err_type, message, hint
+    ):
+        provider = self._provider()
+        provider._session.request.side_effect = _api_error(status, err_type, message)
+        with pytest.raises(LLMFatalError) as info:
+            provider.complete("sys", "user")
+        text = str(info.value)
+        assert message in text
+        assert str(status) in text
+        assert hint in text
+
+    def test_transient_statuses_raise_non_fatal(self):
+        provider = self._provider()
+        provider._session.request.side_effect = _api_error(
+            529, "overloaded_error", "Overloaded"
+        )
+        with pytest.raises(LLMError) as info:
+            provider.complete("sys", "user")
+        assert not isinstance(info.value, LLMFatalError)
+        assert "Overloaded" in str(info.value)
+
+    def test_non_json_error_body_still_surfaces(self):
+        provider = self._provider()
+        resp = MagicMock()
+        resp.status_code = 502
+        resp.json.side_effect = ValueError("no json")
+        resp.text = "<html>bad gateway</html>"
+        provider._session.request.side_effect = requests.HTTPError(
+            "502 error for url: x", response=resp
+        )
+        with pytest.raises(LLMError, match="bad gateway"):
+            provider.complete("sys", "user")
+
+    def test_connection_error_raises_llm_error(self):
+        provider = self._provider()
+        provider._session.request.side_effect = requests.ConnectionError("refused")
+        with pytest.raises(LLMError, match="refused"):
+            provider.complete("sys", "user")
+
+    def test_preflight_hits_free_models_endpoint(self):
+        provider = self._provider()
+        provider._session.request.return_value = MagicMock(status_code=200)
+        provider.preflight()
+        call = provider._session.request.call_args
+        assert call.args[0] == "GET"
+        assert call.args[1] == "https://api.anthropic.com/v1/models/claude-sonnet-5"
+
+    def test_preflight_raises_on_bad_key(self):
+        provider = self._provider()
+        provider._session.request.side_effect = _api_error(
+            401, "authentication_error", "invalid x-api-key"
+        )
+        with pytest.raises(LLMFatalError, match="invalid x-api-key"):
+            provider.preflight()
+
+    def test_preflight_raises_on_unknown_model(self):
+        provider = self._provider()
+        provider._session.request.side_effect = _api_error(
+            404, "not_found_error", "model: claude-sonnet-5"
+        )
+        with pytest.raises(LLMFatalError, match="llm.model="):
+            provider.preflight()
+
+    def test_preflight_ignores_inconclusive_failures(self):
+        provider = self._provider()
+        provider._session.request.side_effect = requests.ConnectionError("refused")
+        provider.preflight()  # must not raise
+
+
+class TestFatalErrorsAreNotSwallowed:
+    """Every AI class catches Exception to skip a single bad call; a fatal
+    provider error (bad key/model/billing) must propagate instead."""
+
+    def _fatal_llm(self) -> FakeLLM:
+        return FakeLLM(error=LLMFatalError("401 authentication_error"))
+
+    def test_ticket_matcher_reraises(self):
+        matcher = AITicketMatcher(llm=self._fatal_llm(), skill_loader=_LOADER)
+        with pytest.raises(LLMFatalError):
+            matcher.find_best(make_pr(), [make_ticket("PROJ-100", "Transport")])
+
+    def test_ticket_matcher_still_skips_transient_errors(self):
+        matcher = AITicketMatcher(
+            llm=FakeLLM(error=LLMError("529 overloaded")), skill_loader=_LOADER
+        )
+        assert (
+            matcher.find_best(make_pr(), [make_ticket("PROJ-100", "Transport")]) is None
+        )
+
+    def test_summarizer_reraises(self):
+        with pytest.raises(LLMFatalError):
+            IssueSummarizer(llm=self._fatal_llm(), skill_loader=_LOADER).summarize(
+                "title", "body"
+            )
+
+    def test_story_points_reraises(self):
+        est = StoryPointEstimator(llm=self._fatal_llm(), skill_loader=_LOADER)
+        with pytest.raises(LLMFatalError):
+            est.estimate(make_pr(), make_ticket("PROJ-1", "Test"))
 
 
 class TestVertexProvider:
@@ -455,6 +591,105 @@ class TestVertexProvider:
         assert url.endswith("test-model:rawPredict")
         body = provider._session.request.call_args.kwargs["json"]
         assert body["anthropic_version"] == "vertex-2023-10-16"
+        assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
+        assert body["system"][0]["text"] == "sys"
+
+    def test_global_region_uses_unprefixed_host(self):
+        with patch.object(VertexProvider, "_refresh_token"):
+            provider = VertexProvider(
+                LLMSettings(
+                    provider="vertex",
+                    model="claude-sonnet-5",
+                    vertex_project="proj",
+                    vertex_region="global",
+                )
+            )
+        assert provider._url_prefix.startswith(
+            "https://aiplatform.googleapis.com/v1/projects/proj/locations/global/"
+        )
+
+    def test_regional_host_keeps_region_prefix(self):
+        with patch.object(VertexProvider, "_refresh_token"):
+            provider = VertexProvider(
+                LLMSettings(
+                    provider="vertex",
+                    model="m",
+                    vertex_project="proj",
+                    vertex_region="us-east5",
+                )
+            )
+        assert provider._url_prefix.startswith(
+            "https://us-east5-aiplatform.googleapis.com/v1/projects/proj/locations/us-east5/"
+        )
+
+    def test_missing_credentials_is_fatal(self):
+        from google.auth.exceptions import DefaultCredentialsError
+
+        with patch(
+            "upstream_jira_sync.llm.vertex.google.auth.default",
+            side_effect=DefaultCredentialsError("no creds"),
+        ):
+            with pytest.raises(LLMFatalError, match="credentials unavailable"):
+                VertexProvider(
+                    LLMSettings(
+                        provider="vertex",
+                        model="m",
+                        vertex_project="proj",
+                        vertex_region="global",
+                    )
+                )
+
+    @pytest.mark.parametrize(
+        "status,kind,message,expect_fatal",
+        [
+            (401, "UNAUTHENTICATED", "Request had invalid authentication", True),
+            (403, "PERMISSION_DENIED", "Permission denied on resource", True),
+            (404, "NOT_FOUND", "Publisher Model not found", True),
+            (400, "FAILED_PRECONDITION", "disallowed by Organization Policy", True),
+            (429, "RESOURCE_EXHAUSTED", "Quota exceeded for tokens per minute", False),
+            (529, "overloaded_error", "Overloaded", False),
+            (500, "INTERNAL", "Internal error", False),
+        ],
+    )
+    def test_http_errors_are_classified(self, status, kind, message, expect_fatal):
+        provider = self._provider()
+        provider._session = MagicMock()
+        provider._session.request.side_effect = _api_error(
+            status, kind, message, key="status"
+        )
+        expected = LLMFatalError if expect_fatal else LLMError
+        with pytest.raises(expected) as info:
+            provider.complete("sys", "hello")
+        assert message in str(info.value)
+        assert isinstance(info.value, LLMFatalError) is expect_fatal
+
+    def test_retry_exhaustion_is_retryable_llm_error(self):
+        provider = self._provider()
+        provider._session = MagicMock()
+        provider._session.request.side_effect = RetryExhaustedError(
+            "Exceeded 4 retries"
+        )
+        with pytest.raises(LLMError, match="rate limit not clearing") as info:
+            provider.complete("sys", "hello")
+        assert not isinstance(info.value, LLMFatalError)
+
+    def test_preflight_skipped_on_mock_base_url(self):
+        provider = self._provider()
+        provider.preflight()  # no credentials, must not raise
+
+    def test_preflight_refreshes_credentials(self):
+        with patch.object(VertexProvider, "_refresh_token") as refresh:
+            provider = VertexProvider(
+                LLMSettings(
+                    provider="vertex",
+                    model="m",
+                    vertex_project="proj",
+                    vertex_region="global",
+                )
+            )
+            provider._credentials = MagicMock()
+            provider.preflight()
+        assert refresh.call_count == 2  # __init__ + preflight
 
 
 class TestLoadProvider:
