@@ -421,6 +421,37 @@ class TestAnthropicProvider:
         ]
         assert body["messages"] == [{"role": "user", "content": "user msg"}]
 
+    def test_complete_skips_leading_thinking_block(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "key"}, clear=True):
+            provider = AnthropicProvider(LLMSettings(provider="anthropic", model="m"))
+        provider._session = MagicMock()
+        resp = _llm_response("")
+        resp.json.return_value = {
+            "content": [
+                {"type": "thinking", "thinking": "", "signature": "sig"},
+                {"type": "text", "text": '{"teams": '},
+                {"type": "text", "text": '["Team Alpha"]}'},
+            ],
+            "stop_reason": "end_turn",
+        }
+        provider._session.request.return_value = resp
+
+        assert provider.complete("sys", "user") == '{"teams": ["Team Alpha"]}'
+
+    def test_complete_rejects_body_without_text(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "key"}, clear=True):
+            provider = AnthropicProvider(LLMSettings(provider="anthropic", model="m"))
+        provider._session = MagicMock()
+        resp = _llm_response("")
+        resp.json.return_value = {
+            "content": [{"type": "thinking", "thinking": ""}],
+            "stop_reason": "max_tokens",
+        }
+        provider._session.request.return_value = resp
+
+        with pytest.raises(LLMError, match="no text content.*thinking.*max_tokens"):
+            provider.complete("sys", "user")
+
     def test_base_url_reroutes(self):
         with patch.dict(os.environ, {}, clear=True):
             provider = AnthropicProvider(
