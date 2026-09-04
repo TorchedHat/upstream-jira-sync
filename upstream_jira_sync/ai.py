@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
+from collections import Counter
 from collections.abc import Sequence
 from typing import Final
 
@@ -25,6 +27,15 @@ from upstream_jira_sync.teams import canonical_team_names, render_team_prompt_se
 
 log = logging.getLogger(__name__)
 
+# Matches a Jira issue key such as PROJ-123 or PROJ-4021 in free text.
+_JIRA_KEY_RE: Final[re.Pattern[str]] = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
+
+# Largest candidate pool handed to the model. Pools above this size are
+# trimmed to the tickets whose summary/description share the most words with
+# the PR (ties keep Jira's "updated DESC" order), so the prompt stays small
+# and the model chooses among plausible tickets instead of the whole backlog.
+MATCH_SHORTLIST_SIZE: Final[int] = 10
+
 
 class _SkillBasedAI:
     """Base for AI classes that load their system prompt from a skill file."""
@@ -37,7 +48,19 @@ class _SkillBasedAI:
 
 
 class AITicketMatcher(_SkillBasedAI):
-    """Matches a PR to a Jira ticket: deterministic URL match first, LLM fallback."""
+    """Matches a PR to a Jira ticket.
+
+    Order of attempts, cheapest first:
+
+    1. A candidate ticket's remote link equals one of the PR's linked issues.
+    2. The PR title or body names a candidate ticket's key (e.g. ``PROJ-123``).
+    3. The LLM chooses among the candidates. Pools larger than
+       ``MATCH_SHORTLIST_SIZE`` are first trimmed to the tickets sharing the
+       rarest words with the PR (weighted against the pool, so no stopword
+       list) so the prompt carries the plausible tickets, not the backlog.
+
+    Steps 1 and 2 never call the model.
+    """
 
     _SKILL_NAME = "ticket_matcher"
     _PROMPT_TEMPLATE: Final[str] = """GitHub PR:
@@ -68,13 +91,26 @@ Rules:
         pr: PullRequest,
         tickets: list[JiraTicket],
     ) -> MatchResult | None:
-        """Try URL-based deterministic match first, then fall back to the LLM."""
+        """Try deterministic matches first, then fall back to the LLM."""
         if not tickets:
             return None
 
         url_match = self._find_by_linked_urls(pr, tickets)
         if url_match:
             return url_match
+
+        key_match = self._find_by_key(pr, tickets)
+        if key_match:
+            return key_match
+
+        candidates = self._shortlist(pr, tickets)
+        if len(candidates) < len(tickets):
+            log.info(
+                "  Shortlisted %d of %d candidate tickets for PR #%d",
+                len(candidates),
+                len(tickets),
+                pr.number,
+            )
 
         ticket_list = "\n".join(
             f"{i + 1}. {t.key}: {t.summary}"
@@ -84,7 +120,7 @@ Rules:
                 else ""
             )
             + (f"\n   Linked: {', '.join(t.remote_links)}" if t.remote_links else "")
-            for i, t in enumerate(tickets)
+            for i, t in enumerate(candidates)
         )
         pr_links = (
             ", ".join(li.url for li in pr.linked_issues)
@@ -125,12 +161,12 @@ Rules:
                 pr.number,
                 pr.title,
                 confidence,
-                len(tickets),
+                len(candidates),
                 reason or "(no reason given)",
             )
             return None
 
-        matched = next((t for t in tickets if t.key == key), None)
+        matched = next((t for t in candidates if t.key == key), None)
         if not matched:
             log.warning(
                 "  Model returned key '%s' which is not in the "
@@ -172,9 +208,82 @@ Rules:
                 return MatchResult(
                     ticket=t,
                     confidence="high",
-                    reason=f"PR linked issue {url} is already linked on {t.key}.",
+                    reason=f"The PR references {url}, which is already linked on this ticket.",
                 )
         return None
+
+    @staticmethod
+    def _find_by_key(
+        pr: PullRequest,
+        tickets: list[JiraTicket],
+    ) -> MatchResult | None:
+        """Deterministic match: the PR title or body names a candidate's key.
+
+        Only keys in the candidate pool count. A key that belongs to another
+        project, another assignee, or a closed ticket is ignored so the model
+        still gets a chance to match on intent.
+        """
+        text = f"{pr.title}\n{pr.body}"
+        found = _JIRA_KEY_RE.findall(text)
+        if not found:
+            return None
+        by_key = {t.key: t for t in tickets}
+        for key in found:
+            ticket = by_key.get(key)
+            if ticket is None:
+                continue
+            where = "title" if key in pr.title else "description"
+            log.info(
+                "  Key matched PR #%d -> %s (named in the PR %s)",
+                pr.number,
+                key,
+                where,
+            )
+            return MatchResult(
+                ticket=ticket,
+                confidence="high",
+                reason=f"The PR {where} names {key} directly.",
+            )
+        return None
+
+    @staticmethod
+    def _shortlist(
+        pr: PullRequest,
+        tickets: list[JiraTicket],
+    ) -> list[JiraTicket]:
+        """Trim a large pool to the tickets that share the most words with the PR.
+
+        Pools of ``MATCH_SHORTLIST_SIZE`` or fewer come back unchanged. Larger
+        pools are scored by the words the PR title/body shares with each
+        ticket's summary + description, with every word weighted by how rare
+        it is across the pool: a word in one ticket counts fully, a word in
+        every ticket counts for nothing. That drops filler ("fix", "the") and
+        project-wide vocabulary alike without a fixed stopword list. Ties keep
+        the incoming order, which is Jira's ``updated DESC``, so when nothing
+        overlaps the most recently updated tickets are kept.
+        """
+        if len(tickets) <= MATCH_SHORTLIST_SIZE:
+            return tickets
+        pr_words = _match_words(f"{pr.title}\n{pr.body[:MAX_PR_BODY_CHARS]}")
+        ticket_words = [
+            _match_words(f"{t.summary}\n{t.description[:MAX_TICKET_DESC_CHARS]}")
+            for t in tickets
+        ]
+        pool = len(tickets)
+        doc_freq = Counter(w for words in ticket_words for w in words)
+        weight = {w: math.log(pool / doc_freq[w]) for w in pr_words if w in doc_freq}
+        scored = [
+            (sum(weight.get(w, 0.0) for w in words), i, t)
+            for i, (t, words) in enumerate(zip(tickets, ticket_words, strict=True))
+        ]
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [t for _, _, t in scored[:MATCH_SHORTLIST_SIZE]]
+
+
+def _match_words(text: str) -> set[str]:
+    """Lowercase word tokens (3+ chars, not purely numeric) of *text*."""
+    words = re.findall(r"[a-z0-9][a-z0-9_.]{2,}", text.lower())
+    return {w for w in words if not w.isdigit()}
 
 
 class StoryPointEstimator(_SkillBasedAI):

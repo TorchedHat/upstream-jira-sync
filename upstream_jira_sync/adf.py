@@ -28,6 +28,38 @@ def adf_to_text(adf: Any) -> str:
     return "".join(parts).strip()
 
 
+def _sentence(text: str) -> str:
+    """Trim and terminate free-form model text so it reads as a sentence."""
+    text = " ".join(text.split())
+    if text and text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def _match_summary(confidence: str, reason: str) -> str:
+    """Plain-language explanation of why the PR was linked to this ticket.
+
+    Internal verdict tokens (``high``, ``state``, ``auto``) never reach Jira;
+    each maps to a short sentence a reader can act on.
+    """
+    if not confidence:
+        return ""
+    if confidence == "auto":
+        return (
+            "This ticket was created automatically to track the upstream PR, "
+            "which had no existing tracking ticket."
+        )
+    if confidence == "state":
+        return (
+            "Linked to this ticket automatically. "
+            "The PR was already tracked here in an earlier run."
+        )
+    lead = "Linked to this ticket automatically."
+    if reason:
+        return f"{lead} {_sentence(reason)}"
+    return lead
+
+
 class AdfBuilder:
     """Constructs Atlassian Document Format (ADF) payloads for Jira API v3."""
 
@@ -67,23 +99,19 @@ class AdfBuilder:
                     {
                         "type": "text",
                         "text": (
-                            f"Updated: {pr.updated_date}"
-                            f"   |   Jira status set to: {status_name}"
+                            f"Jira status set to {status_name}. "
+                            f"PR last updated {pr.updated_date}."
                         ),
                     }
                 ],
             },
         ]
-        if match_confidence and match_reason:
+        summary = _match_summary(match_confidence, match_reason)
+        if summary:
             content.append(
                 {
                     "type": "paragraph",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Match confidence: {match_confidence} — {match_reason}",
-                        }
-                    ],
+                    "content": [{"type": "text", "text": summary}],
                 }
             )
         if note:

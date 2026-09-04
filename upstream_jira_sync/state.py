@@ -20,6 +20,7 @@ _NAMESPACES: tuple[str, ...] = (
     "locks",
     "rfc_tracking",
     "low_conf_pings",
+    "low_conf_matches",
     "pr_state_snapshots",
     "co_contributions",
     "digest",
@@ -45,6 +46,7 @@ class SyncState:
         "locks": "locked_at",
         "rfc_tracking": "tracked_at",
         "low_conf_pings": "pinged_at",
+        "low_conf_matches": "matched_at",
         "pr_state_snapshots": "observed_at",
         "co_contributions": "noted_at",
     }
@@ -151,6 +153,26 @@ class SyncState:
         self._data["comments"][self._key(pr_url, ticket_key)] = entry
         self._save()
 
+    def get_linked_ticket_key(self, pr_url: str) -> str:
+        """Return the ticket this PR was already linked to, or empty.
+
+        Prefers the most recent comment record for the PR, then falls back to
+        the ticket auto-created for it. Lets the orchestrator skip the AI
+        matcher for PRs whose answer is already on file.
+        """
+        prefix = self._key(pr_url, "")
+        best_key, best_at = "", ""
+        for key, entry in self._data["comments"].items():
+            if not key.startswith(prefix):
+                continue
+            ticket_key = key[len(prefix) :]
+            if not ticket_key:
+                continue
+            commented_at = entry.get("commented_at", "")
+            if not best_key or commented_at > best_at:
+                best_key, best_at = ticket_key, commented_at
+        return best_key or self.get_tracked_ticket_key(pr_url)
+
     def is_estimated(self, pr_url: str, ticket_key: str) -> bool:
         """Check if story points have already been set for this PR/ticket."""
         key = self._key(pr_url, ticket_key)
@@ -225,6 +247,31 @@ class SyncState:
         self._data["low_conf_pings"][pr_url] = {
             "pinged_at": datetime.now(timezone.utc).isoformat()
         }
+        self._save()
+
+    def is_low_conf_unchanged(self, pr_url: str, activity_at: str) -> bool:
+        """True when the matcher already returned low confidence for this PR
+        and no human activity has happened on it since."""
+        entry = self._data["low_conf_matches"].get(pr_url)
+        return bool(entry) and entry.get("activity_at", "") == activity_at
+
+    def record_low_conf_match(self, pr_url: str, activity_at: str) -> None:
+        """Remember a low-confidence match verdict keyed to the PR's last human
+        activity, so an unchanged PR is not re-sent to the model. No-op in
+        read-only mode."""
+        if self._read_only:
+            return
+        self._data["low_conf_matches"][pr_url] = {
+            "activity_at": activity_at,
+            "matched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save()
+
+    def clear_low_conf_match(self, pr_url: str) -> None:
+        """Forget a low-confidence verdict once the PR is linked. No-op in read-only mode."""
+        if self._read_only or pr_url not in self._data["low_conf_matches"]:
+            return
+        del self._data["low_conf_matches"][pr_url]
         self._save()
 
     @staticmethod

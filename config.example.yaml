@@ -61,7 +61,19 @@ settings:
   # ── LLM provider ──────────────────────────────────────────────────────────
   llm:
     provider: anthropic        # anthropic | vertex | any installed entry point
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5     # default for every task
+    thinking: off              # off | adaptive; only affects models that think by default (Sonnet 5)
+    effort: low                # low | medium | high | xhigh | max; xhigh/max need thinking: adaptive
+    # Per-task overrides (match, estimate, summarize, dedupe, claim, team, rfc,
+    # digest). Recommended split: the four short, well-constrained calls run on
+    # Haiku 4.5; match, estimate, dedupe and digest stay on the default model
+    # because a wrong answer there writes to Jira or is read by people.
+    # models:
+    #   team: claude-haiku-4-5       # path-driven labels, validated against `teams`
+    #   claim: claude-haiku-4-5      # binary intent, few-shot prompt
+    #   rfc: claude-haiku-4-5        # binary epic|story, few-shot prompt
+    #   summarize: claude-haiku-4-5  # 2-3 sentence ticket description
+    # On Vertex, use the versioned id if the alias is rejected: claude-haiku-4-5@20251001
     # vertex only:
     # vertex_project: your-gcp-project-id
     # vertex_region: us-east5

@@ -7,11 +7,7 @@ from typing import Final
 import requests
 
 from upstream_jira_sync.config import LLMSettings
-from upstream_jira_sync.llm.base import (
-    LLMFatalError,
-    MessagesProvider,
-    cacheable_system,
-)
+from upstream_jira_sync.llm.base import LLMFatalError, MessagesProvider
 
 log = logging.getLogger(__name__)
 
@@ -72,11 +68,5 @@ class AnthropicProvider(MessagesProvider):
 
     def complete(self, system: str, user_message: str, max_tokens: int = 256) -> str:
         return self._complete(
-            self._url,
-            {
-                "model": self._model,
-                "max_tokens": max_tokens,
-                "system": cacheable_system(system),
-                "messages": [{"role": "user", "content": user_message}],
-            },
+            self._url, self._request_body(system, user_message, max_tokens)
         )

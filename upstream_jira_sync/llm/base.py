@@ -44,6 +44,50 @@ def api_error_detail(exc: requests.HTTPError) -> tuple[int | None, str, str]:
         return resp.status_code, "", (resp.text or str(exc)).strip()[:500]
 
 
+# Model families that think by default: omitting ``thinking`` on these means
+# adaptive thinking at effort ``high``, which is what put ``thinking`` blocks
+# ahead of the answer and burned the whole ``max_tokens`` backstop in nightly
+# runs. Older models (Opus/Sonnet 4.x, Haiku 4.5) do not think unless asked,
+# and Haiku 4.5 rejects ``output_config``, so they get no extra request fields.
+_THINKS_BY_DEFAULT: Final[tuple[str, ...]] = ("claude-sonnet-5",)
+
+# ``max_tokens`` caps thinking plus the answer when thinking is on, so the
+# short backstops AI classes pass (128-600) would cut the answer off. This is
+# added on top for thinking-on requests only.
+THINKING_HEADROOM: Final[int] = 1024
+
+
+def thinks_by_default(model: str) -> bool:
+    return model.startswith(_THINKS_BY_DEFAULT)
+
+
+def thinking_enabled(model: str, thinking: str) -> bool:
+    """Whether a request to ``model`` under ``llm.thinking=thinking`` will
+    carry thinking blocks (and so needs ``max_tokens`` headroom)."""
+    return thinks_by_default(model) and thinking != "off"
+
+
+def reasoning_params(
+    model: str, effort: str, thinking: str = "off"
+) -> dict[str, object]:
+    """Request fields that keep short classification calls cheap on ``model``.
+
+    Models that do not think by default are sent as-is. Thinking-by-default
+    models get ``thinking: disabled`` under ``off`` (the default: these are
+    short classification calls where Sonnet 5 without reasoning does as well
+    as its predecessors did) or ``thinking: adaptive`` under ``adaptive``.
+    ``effort`` is sent either way when set; it is capped at ``high`` for
+    ``off`` by config validation because the API rejects higher values
+    without thinking."""
+    if not thinks_by_default(model):
+        return {}
+    mode = "adaptive" if thinking_enabled(model, thinking) else "disabled"
+    params: dict[str, object] = {"thinking": {"type": mode}}
+    if effort:
+        params["output_config"] = {"effort": effort}
+    return params
+
+
 def cacheable_system(text: str) -> list[dict[str, object]]:
     """The system prompt as a single cacheable content block.
 
@@ -65,6 +109,24 @@ class MessagesProvider(BaseHTTPClient):
     def __init__(self, settings: LLMSettings) -> None:
         super().__init__()
         self._model = settings.model
+        self._effort = settings.effort
+        self._thinking = settings.thinking
+
+    def _request_body(
+        self, system: str, user_message: str, max_tokens: int
+    ) -> dict[str, object]:
+        """The Messages request shared by every wire-compatible provider:
+        cacheable system prompt, one user turn, and model-aware reasoning
+        fields. Subclasses add their own routing keys on top."""
+        if thinking_enabled(self._model, self._thinking):
+            max_tokens += THINKING_HEADROOM
+        return {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            **reasoning_params(self._model, self._effort, self._thinking),
+            "system": cacheable_system(system),
+            "messages": [{"role": "user", "content": user_message}],
+        }
 
     def _diagnose(
         self, status: int | None, kind: str, message: str
@@ -122,6 +184,14 @@ class MessagesProvider(BaseHTTPClient):
                 f"{self.label} returned no text content (blocks: {kinds}, "
                 f"stop_reason: {data.get('stop_reason')})"
             )
+        if data.get("stop_reason") == "max_tokens":
+            # A cut-off answer is a failed attempt, not a shorter answer:
+            # every caller parses the text, and the truncated JSON would fail
+            # there with a less useful message.
+            raise LLMError(
+                f"{self.label} hit max_tokens={body.get('max_tokens')} before "
+                f"finishing (usage: {data.get('usage')})"
+            )
         return text
 
 
@@ -129,7 +199,8 @@ class MessagesProvider(BaseHTTPClient):
 class LLMProvider(Protocol):
     """Single-turn completion surface consumed by every AI class (R9).
 
-    The model is bound at provider construction from LLMSettings.model, so
+    The model is bound at provider construction from LLMSettings.model (the
+    CLI builds one provider per distinct model in ``llm.models``), so
     callers pass only prompt content. Implementations must return the
     stripped text of the first content block and raise on transport errors
     (AI classes catch and skip)."""

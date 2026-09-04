@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from upstream_jira_sync.state import SCHEMA_VERSION, SyncState
+from upstream_jira_sync.models import STATE_TTL_DAYS
 
 PR = "https://github.com/exampleorg/widgets/pull/1"
 
@@ -219,3 +220,65 @@ class TestDigestNamespace:
         state = SyncState(path=str(tmp_path / "s.json"), read_only=True)
         state.record_digest_event("pr_linked", ticket_key="PROJ-1")
         assert state.read_digest_events("1970-01-01T00:00:00+00:00") == []
+
+
+class TestMatcherMemory:
+    """State the orchestrator consults before paying for the AI matcher."""
+
+    def test_linked_ticket_prefers_most_recent_comment(self, tmp_path):
+        state = SyncState(path=str(tmp_path / "s.json"))
+        assert state.get_linked_ticket_key(PR) == ""
+        state.record_comment(PR, "PROJ-1", "review")
+        state._data["comments"][f"{PR}::PROJ-1"]["commented_at"] = (
+            "2026-01-01T00:00:00+00:00"
+        )
+        state.record_comment(PR, "PROJ-2", "review")
+        assert state.get_linked_ticket_key(PR) == "PROJ-2"
+
+    def test_linked_ticket_falls_back_to_tracked_ticket(self, tmp_path):
+        state = SyncState(path=str(tmp_path / "s.json"))
+        state.record_pr_tracked(PR, "PROJ-9")
+        assert state.get_linked_ticket_key(PR) == "PROJ-9"
+
+    def test_linked_ticket_does_not_match_pr_url_prefix(self, tmp_path):
+        state = SyncState(path=str(tmp_path / "s.json"))
+        state.record_comment(f"{PR}0", "PROJ-10", "review")
+        assert state.get_linked_ticket_key(PR) == ""
+
+    def test_low_conf_match_keyed_to_activity_timestamp(self, tmp_path):
+        path = str(tmp_path / "s.json")
+        state = SyncState(path=path)
+        assert state.is_low_conf_unchanged(PR, "2026-09-01T00:00:00Z") is False
+        state.record_low_conf_match(PR, "2026-09-01T00:00:00Z")
+        reloaded = SyncState(path=path)
+        assert reloaded.is_low_conf_unchanged(PR, "2026-09-01T00:00:00Z") is True
+        assert reloaded.is_low_conf_unchanged(PR, "2026-09-02T00:00:00Z") is False
+
+    def test_clear_low_conf_match(self, tmp_path):
+        state = SyncState(path=str(tmp_path / "s.json"))
+        state.record_low_conf_match(PR, "2026-09-01T00:00:00Z")
+        state.clear_low_conf_match(PR)
+        state.clear_low_conf_match(PR)  # idempotent
+        assert state.is_low_conf_unchanged(PR, "2026-09-01T00:00:00Z") is False
+
+    def test_low_conf_match_read_only_is_noop(self, tmp_path):
+        path = str(tmp_path / "s.json")
+        state = SyncState(path=path, read_only=True)
+        state.record_low_conf_match(PR, "2026-09-01T00:00:00Z")
+        assert state.is_low_conf_unchanged(PR, "2026-09-01T00:00:00Z") is False
+        assert not os.path.exists(path)
+
+    def test_low_conf_match_pruned_by_ttl(self, tmp_path):
+        path = tmp_path / "s.json"
+        stale = (
+            datetime.now(timezone.utc) - timedelta(days=STATE_TTL_DAYS + 1)
+        ).isoformat()
+        blob = {
+            "version": SCHEMA_VERSION,
+            "low_conf_matches": {
+                PR: {"activity_at": "2026-09-01T00:00:00Z", "matched_at": stale}
+            },
+        }
+        path.write_text(json.dumps(blob))
+        state = SyncState(path=str(path))
+        assert state.is_low_conf_unchanged(PR, "2026-09-01T00:00:00Z") is False
