@@ -5,8 +5,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
-from conftest import FakeLLM, make_issue, make_pr, make_teams, make_ticket
+from conftest import (
+    FakeLLM,
+    make_issue,
+    make_linked_issue,
+    make_pr,
+    make_teams,
+    make_ticket,
+)
 from upstream_jira_sync.ai import (
+    MATCH_SHORTLIST_SIZE,
     AITicketMatcher,
     IssueClaimClassifier,
     IssueDeduplicator,
@@ -18,7 +26,12 @@ from upstream_jira_sync.ai import (
 from upstream_jira_sync.config import LLMSettings
 from upstream_jira_sync.http import RetryExhaustedError
 from upstream_jira_sync.llm.anthropic import AnthropicProvider
-from upstream_jira_sync.llm.base import LLMError, LLMFatalError, load_provider
+from upstream_jira_sync.llm.base import (
+    LLMError,
+    LLMFatalError,
+    load_provider,
+    reasoning_params,
+)
 from upstream_jira_sync.llm.vertex import VertexProvider
 from upstream_jira_sync.models import LinkedIssue
 from upstream_jira_sync.skill_loader import SkillLoader, is_bot_actor, is_bot_author
@@ -209,6 +222,138 @@ class TestAITicketMatcher:
         assert "Lower view/reshape ops to fused kernels." in prompt
         assert "https://github.com/exampleorg/widgets/issues/11" in prompt
         assert "https://github.com/exampleorg/widgets/issues/99" in prompt
+
+    # -- item 1: Jira key named in the PR ---------------------------------
+
+    def test_key_in_title_matches_without_calling_llm(self):
+        matcher, llm = make_matcher()
+        tickets = [make_ticket("PROJ-7", "Other"), make_ticket("PROJ-42", "Retry")]
+        pr = make_pr(title="[PROJ-42] Fix transport layer reconnect")
+
+        result = matcher.find_best(pr, tickets)
+
+        assert result is not None
+        assert result.ticket.key == "PROJ-42"
+        assert result.confidence == "high"
+        assert "PROJ-42" in result.reason
+        assert "title" in result.reason
+        assert llm.calls == []
+
+    def test_key_in_body_matches_without_calling_llm(self):
+        matcher, llm = make_matcher()
+        tickets = [make_ticket("PROJ-7", "Other"), make_ticket("PROJ-42", "Retry")]
+        pr = make_pr(body="Implements the retry loop.\n\nJira: PROJ-42")
+
+        result = matcher.find_best(pr, tickets)
+
+        assert result is not None
+        assert result.ticket.key == "PROJ-42"
+        assert "description" in result.reason
+        assert llm.calls == []
+
+    def test_key_not_in_candidate_pool_falls_through_to_llm(self):
+        matcher, llm = make_matcher(
+            response_text='{"key": "PROJ-7", "confidence": "high", "reason": "r"}'
+        )
+        tickets = [make_ticket("PROJ-7", "Other")]
+        pr = make_pr(title="OTHER-999 unrelated project key")
+
+        result = matcher.find_best(pr, tickets)
+
+        assert result is not None
+        assert result.ticket.key == "PROJ-7"
+        assert len(llm.calls) == 1
+
+    def test_lowercase_or_partial_keys_do_not_match(self):
+        matcher, llm = make_matcher()
+        tickets = [make_ticket("PROJ-42", "Retry")]
+        pr = make_pr(title="proj-42 lowercase", body="See XPROJ-42 and PROJ-421.")
+
+        assert matcher.find_best(pr, tickets) is None
+        assert len(llm.calls) == 1
+
+    def test_url_match_wins_over_key_match(self):
+        matcher, llm = make_matcher()
+        url_ticket = make_ticket("PROJ-1", "Linked")
+        url_ticket.remote_links = ["https://github.com/exampleorg/widgets/issues/11"]
+        key_ticket = make_ticket("PROJ-2", "Named")
+        pr = make_pr(
+            title="PROJ-2 fix",
+            linked_issues=(make_linked_issue(11),),
+        )
+
+        result = matcher.find_best(pr, [key_ticket, url_ticket])
+
+        assert result is not None
+        assert result.ticket.key == "PROJ-1"
+        assert llm.calls == []
+
+    # -- item 2: lexical shortlist ------------------------------------------
+
+    def _pool(self, n, target_index):
+        tickets = []
+        for i in range(n):
+            t = make_ticket(f"PROJ-{i + 1}", f"Backlog item number {i + 1}")
+            t.description = "Placeholder scope for an unrelated backlog card."
+            tickets.append(t)
+        target = tickets[target_index]
+        target.summary = "Transport client reconnect retries"
+        target.description = "Add a bounded retry loop to the transport client."
+        return tickets, target
+
+    def test_small_pool_is_sent_whole(self):
+        matcher, llm = make_matcher()
+        tickets, _ = self._pool(MATCH_SHORTLIST_SIZE, 3)
+
+        matcher.find_best(make_pr(), tickets)
+
+        prompt = llm.calls[0]["user_message"]
+        assert all(t.key + ":" in prompt for t in tickets)
+
+    def test_large_pool_is_trimmed_and_keeps_lexical_match(self):
+        matcher, llm = make_matcher()
+        tickets, target = self._pool(50, 47)
+
+        matcher.find_best(make_pr(), tickets)
+
+        prompt = llm.calls[0]["user_message"]
+        listed = [t for t in tickets if f"{t.key}:" in prompt]
+        assert len(listed) == MATCH_SHORTLIST_SIZE
+        assert target in listed
+        assert f"1. {target.key}:" in prompt
+
+    def test_shortlist_ties_keep_recency_order(self):
+        matcher, llm = make_matcher()
+        tickets = []
+        for i in range(30):
+            t = make_ticket(f"PROJ-{i + 1}", "Unrelated card")
+            tickets.append(t)
+
+        matcher.find_best(make_pr(), tickets)
+
+        prompt = llm.calls[0]["user_message"]
+        listed = [t.key for t in tickets if f"{t.key}:" in prompt]
+        assert listed == [f"PROJ-{i + 1}" for i in range(MATCH_SHORTLIST_SIZE)]
+
+    def test_model_key_outside_shortlist_is_rejected(self):
+        tickets, _ = self._pool(50, 0)
+        dropped = tickets[-1]  # zero overlap, last in recency order
+        matcher, llm = make_matcher(
+            response_text=(
+                '{"key": "%s", "confidence": "high", "reason": "r"}' % dropped.key
+            )
+        )
+
+        assert matcher.find_best(make_pr(), tickets) is None
+
+    def test_non_high_warning_reports_shortlist_size(self, caplog):
+        matcher, _ = make_matcher()
+        tickets, _ = self._pool(50, 0)
+
+        with caplog.at_level("WARNING"):
+            matcher.find_best(make_pr(), tickets)
+
+        assert f"from {MATCH_SHORTLIST_SIZE} candidates" in caplog.text
 
 
 class TestStoryPointEstimator:
@@ -452,6 +597,60 @@ class TestAnthropicProvider:
         with pytest.raises(LLMError, match="no text content.*thinking.*max_tokens"):
             provider.complete("sys", "user")
 
+    def test_complete_rejects_truncated_answer(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "key"}, clear=True):
+            provider = AnthropicProvider(LLMSettings(provider="anthropic", model="m"))
+        provider._session = MagicMock()
+        resp = _llm_response('{"ticket_key": "PROJ-1", "conf')
+        resp.json.return_value["stop_reason"] = "max_tokens"
+        provider._session.request.return_value = resp
+
+        with pytest.raises(LLMError, match="hit max_tokens=128"):
+            provider.complete("sys", "user", max_tokens=128)
+
+    def _body_for(self, model: str, effort: str = "low", thinking: str = "off") -> dict:
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "key"}, clear=True):
+            provider = AnthropicProvider(
+                LLMSettings(
+                    provider="anthropic",
+                    model=model,
+                    effort=effort,
+                    thinking=thinking,
+                )
+            )
+        provider._session = MagicMock()
+        provider._session.request.return_value = _llm_response("ok")
+        provider.complete("sys", "user", max_tokens=128)
+        return provider._session.request.call_args.kwargs["json"]
+
+    def test_thinking_default_model_has_thinking_disabled_by_default(self):
+        body = self._body_for("claude-sonnet-5")
+        # Sonnet 5 thinks unless told not to; the nightly failures were
+        # thinking blocks eating a 128-token backstop before any answer.
+        assert body["thinking"] == {"type": "disabled"}
+        assert body["output_config"] == {"effort": "low"}
+        assert body["max_tokens"] == 128
+
+    def test_thinking_adaptive_adds_headroom(self):
+        body = self._body_for("claude-sonnet-5", thinking="adaptive")
+        assert body["thinking"] == {"type": "adaptive"}
+        assert body["output_config"] == {"effort": "low"}
+        # max_tokens caps thinking + answer when thinking is on, so the
+        # caller's short backstop is padded rather than sent verbatim.
+        assert body["max_tokens"] == 128 + 1024
+
+    def test_empty_effort_omits_output_config(self):
+        body = self._body_for("claude-sonnet-5", effort="")
+        assert body["thinking"] == {"type": "disabled"}
+        assert "output_config" not in body
+
+    @pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-4-6"])
+    def test_non_thinking_model_gets_no_reasoning_fields(self, model):
+        body = self._body_for(model)
+        assert "thinking" not in body
+        assert "output_config" not in body
+        assert body["max_tokens"] == 128
+
     def test_base_url_reroutes(self):
         with patch.dict(os.environ, {}, clear=True):
             provider = AnthropicProvider(
@@ -625,6 +824,26 @@ class TestVertexProvider:
         assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
         assert body["system"][0]["text"] == "sys"
 
+    def test_thinking_default_model_body_has_no_model_key(self):
+        provider = VertexProvider(
+            LLMSettings(
+                provider="vertex",
+                model="claude-sonnet-5",
+                vertex_project="test-project",
+                base_url="http://localhost:9999",
+            )
+        )
+        provider._session = MagicMock()
+        provider._session.request.return_value = _llm_response("answer")
+
+        provider.complete("sys", "hello", max_tokens=256)
+        body = provider._session.request.call_args.kwargs["json"]
+        # Vertex routes by URL; the body carries the reasoning fields only.
+        assert "model" not in body
+        assert body["thinking"] == {"type": "disabled"}
+        assert body["output_config"] == {"effort": "low"}
+        assert body["max_tokens"] == 256
+
     def test_global_region_uses_unprefixed_host(self):
         with patch.object(VertexProvider, "_refresh_token"):
             provider = VertexProvider(
@@ -721,6 +940,26 @@ class TestVertexProvider:
             provider._credentials = MagicMock()
             provider.preflight()
         assert refresh.call_count == 2  # __init__ + preflight
+
+
+class TestReasoningParams:
+    def test_thinking_family_off_by_default(self):
+        assert reasoning_params("claude-sonnet-5", "medium") == {
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": "medium"},
+        }
+
+    def test_adaptive_when_asked(self):
+        assert reasoning_params("claude-sonnet-5", "medium", "adaptive") == {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "medium"},
+        }
+
+    @pytest.mark.parametrize(
+        "model", ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8", "m"]
+    )
+    def test_other_models_untouched(self, model):
+        assert reasoning_params(model, "low") == {}
 
 
 class TestLoadProvider:

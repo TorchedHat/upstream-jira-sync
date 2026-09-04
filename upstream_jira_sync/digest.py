@@ -469,7 +469,7 @@ def _ai_narrative(config: AppConfig, report: DigestReport) -> str:
     from upstream_jira_sync.skill_loader import SkillLoader
 
     try:
-        provider = load_provider(config.llm)
+        provider = load_provider(config.llm.for_task("digest"))
         summarizer = WeeklyDigestSummarizer(
             provider, SkillLoader(override_dir=config.skills_dir)
         )

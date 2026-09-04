@@ -221,6 +221,85 @@ class TestSyncFlow:
         assert summary.comment_dedup == 1
         jira.post_comment.assert_not_called()
 
+    def test_previously_linked_pr_skips_matcher(self, tmp_path):
+        pr = make_pr(number=42)
+        ticket = make_ticket("PROJ-100", "Test")
+        orch, _, _, matcher, state = _make_orchestrator(
+            tmp_path,
+            pr_reviews=[PRWithReview(pr, ReviewDecision.NONE, 0)],
+            tickets=[ticket, make_ticket("PROJ-101", "Other")],
+            match_result=None,
+        )
+        state.record_comment(pr.url, "PROJ-100", "review")
+
+        summary = orch.run()
+        matcher.find_best.assert_not_called()
+        assert summary.matched == 1
+        assert summary.low_conf == 0
+
+    def test_linked_ticket_missing_from_candidates_falls_through_to_matcher(
+        self, tmp_path
+    ):
+        pr = make_pr(number=42)
+        ticket = make_ticket("PROJ-100", "Test")
+        orch, _, _, matcher, state = _make_orchestrator(
+            tmp_path,
+            pr_reviews=[PRWithReview(pr, ReviewDecision.NONE, 0)],
+            tickets=[ticket],
+            match_result=MatchResult(ticket=ticket, confidence="high", reason="t"),
+        )
+        state.record_comment(pr.url, "PROJ-999", "review")  # closed / reassigned
+
+        orch.run()
+        matcher.find_best.assert_called_once()
+
+    def test_unchanged_low_conf_pr_skips_matcher_until_human_activity(self, tmp_path):
+        pr = make_pr(number=42)
+        ticket = make_ticket("PROJ-100", "Test")
+        orch, github, _, matcher, state = _make_orchestrator(
+            tmp_path,
+            pr_reviews=[PRWithReview(pr, ReviewDecision.NONE, 0)],
+            tickets=[ticket],
+            match_result=None,
+        )
+        # Closed PR: no auto-create, so the low-confidence verdict is remembered.
+        pr = replace(pr, state="closed")
+        github.get_prs_by_user.return_value = [PRWithReview(pr, ReviewDecision.NONE, 0)]
+
+        orch.run()
+        assert matcher.find_best.call_count == 1
+        assert state.is_low_conf_unchanged(pr.url, pr.human_activity_at)
+
+        orch.run()
+        assert matcher.find_best.call_count == 1  # unchanged PR not re-sent
+
+        bumped = replace(
+            pr,
+            last_human_activity_at=(
+                datetime.now(timezone.utc) + timedelta(hours=1)
+            ).isoformat(),
+        )
+        github.get_prs_by_user.return_value = [
+            PRWithReview(bumped, ReviewDecision.NONE, 0)
+        ]
+        orch.run()
+        assert matcher.find_best.call_count == 2
+
+    def test_match_clears_low_conf_memory(self, tmp_path):
+        pr = make_pr(number=42)
+        ticket = make_ticket("PROJ-100", "Test")
+        orch, _, _, _, state = _make_orchestrator(
+            tmp_path,
+            pr_reviews=[PRWithReview(pr, ReviewDecision.NONE, 0)],
+            tickets=[ticket],
+            match_result=MatchResult(ticket=ticket, confidence="high", reason="t"),
+        )
+        # Verdict from before the PR was last touched: matcher runs and matches.
+        state.record_low_conf_match(pr.url, "2026-01-01T00:00:00Z")
+
+        orch.run()
+        assert pr.url not in state._data["low_conf_matches"]
+
     def test_no_tickets_skips_member(self, tmp_path):
         orch, _, _, matcher, _ = _make_orchestrator(
             tmp_path,

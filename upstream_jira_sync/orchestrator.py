@@ -661,13 +661,41 @@ class SyncOrchestrator:
             )
             return
 
-        match = self._matcher.find_best(pr, tickets) if tickets else None
+        # Consult state before paying for the AI matcher: a PR already linked
+        # to a ticket keeps that ticket, and a PR the matcher already declined
+        # is only re-asked once a human touches it again (or the memory ages
+        # out with the state TTL).
+        match = None
+        linked = self._linked_ticket(pr, tickets)
+        if linked is not None:
+            ticket = linked
+            match_confidence = "state"
+            match_reason = "Reused the ticket previously linked to this PR."
+            summary.record_pr_outcome(PROutcome.MATCHED)
+            log.info(
+                "  PR #%d already linked to %s -- skipping AI match",
+                pr.number,
+                ticket.key,
+            )
+        elif tickets and self._state.is_low_conf_unchanged(
+            pr.url, pr.human_activity_at
+        ):
+            log.info(
+                "  PR #%d unchanged since last low-confidence match -- skipping AI match",
+                pr.number,
+            )
+        elif tickets:
+            match = self._matcher.find_best(pr, tickets)
+            if match is None:
+                self._state.record_low_conf_match(pr.url, pr.human_activity_at)
+
         if match:
             ticket = match.ticket
             match_confidence, match_reason = match.confidence, match.reason
             summary.record_pr_outcome(PROutcome.MATCHED)
+            self._state.clear_low_conf_match(pr.url)
             self._maybe_reparent_under_rfc(pr, ticket, member)
-        else:
+        elif linked is None:
             summary.record_pr_outcome(
                 PROutcome.NO_TICKETS if not tickets else PROutcome.LOW_CONF
             )
@@ -743,6 +771,22 @@ class SyncOrchestrator:
                 pr.number,
                 ticket.key,
             )
+
+    def _linked_ticket(
+        self, pr: PullRequest, tickets: list[JiraTicket]
+    ) -> JiraTicket | None:
+        """Return the candidate ticket state already links this PR to, if any.
+
+        Falls through to the matcher when the remembered ticket is not among
+        the member's current candidates (closed, reassigned, or pruned).
+        """
+        key = self._state.get_linked_ticket_key(pr.url)
+        if not key:
+            return None
+        for ticket in tickets:
+            if ticket.key == key:
+                return ticket
+        return None
 
     def _roster_co_authors(self, pr: PullRequest) -> list[TeamMember]:
         """Team-roster members (other than the PR author) that authored commits on the PR."""

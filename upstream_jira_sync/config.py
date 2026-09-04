@@ -3,7 +3,7 @@ from __future__ import annotations
 import difflib
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Final
 
 import yaml
@@ -43,16 +43,55 @@ class TeamSpec:
     team_id: str = ""  # optional Atlassian team UUID for the native Team field
 
 
+# Each AI task that can be routed to its own model via ``llm.models``.
+LLM_TASKS: Final[tuple[str, ...]] = (
+    "match",  # AITicketMatcher
+    "estimate",  # StoryPointEstimator
+    "summarize",  # IssueSummarizer
+    "dedupe",  # IssueDeduplicator
+    "claim",  # IssueClaimClassifier
+    "team",  # TeamClassifier
+    "rfc",  # RfcClassifier
+    "digest",  # WeeklyDigestSummarizer
+)
+
+LLM_EFFORTS: Final[tuple[str, ...]] = ("low", "medium", "high", "xhigh", "max")
+LLM_THINKING: Final[tuple[str, ...]] = ("off", "adaptive")
+# The API rejects ``thinking: disabled`` combined with these efforts (400).
+_EFFORTS_NEEDING_THINKING: Final[frozenset[str]] = frozenset({"xhigh", "max"})
+
+
 @dataclass
 class LLMSettings:
     """Pluggable LLM provider selection (R9). base_url is set by the CLI for
-    --mock-url routing only, never from config.yaml."""
+    --mock-url routing only, never from config.yaml.
+
+    ``model`` is the default for every task; ``models`` overrides it per task
+    (keys from LLM_TASKS) so cheap classifiers can run on a smaller model than
+    the ticket matcher. ``thinking`` and ``effort`` shape requests to models
+    that think by default; see llm/base.py:reasoning_params."""
 
     provider: str = "anthropic"
     model: str = ""
+    models: dict[str, str] = field(default_factory=dict)
+    thinking: str = "off"
+    effort: str = "low"
     vertex_project: str = ""
     vertex_region: str = "us-east5"
     base_url: str = ""
+
+    def model_for(self, task: str) -> str:
+        return self.models.get(task) or self.model
+
+    def for_task(self, task: str) -> LLMSettings:
+        """A copy bound to the model configured for ``task``."""
+        return replace(self, model=self.model_for(task), models={})
+
+    @property
+    def distinct_models(self) -> list[str]:
+        """Every model some task resolves to, default first, no repeats."""
+        seen = dict.fromkeys([self.model] + [self.model_for(t) for t in LLM_TASKS])
+        return [m for m in seen if m]
 
 
 @dataclass
@@ -280,6 +319,31 @@ class AppConfig:
             errors.append("llm.provider is required")
         if not self.llm.model:
             errors.append("llm.model is required")
+        for task, model in self.llm.models.items():
+            if task not in LLM_TASKS:
+                errors.append(
+                    f"llm.models.{task} is not a task; expected one of "
+                    f"{', '.join(LLM_TASKS)}"
+                )
+            elif not isinstance(model, str) or not model:
+                errors.append(f"llm.models.{task} must be a model name")
+        if self.llm.thinking not in LLM_THINKING:
+            errors.append(
+                f"llm.thinking must be one of {', '.join(LLM_THINKING)}, "
+                f"got {self.llm.thinking!r}"
+            )
+        if self.llm.effort and self.llm.effort not in LLM_EFFORTS:
+            errors.append(
+                f"llm.effort must be one of {', '.join(LLM_EFFORTS)}, "
+                f"got {self.llm.effort!r}"
+            )
+        elif (
+            self.llm.thinking == "off" and self.llm.effort in _EFFORTS_NEEDING_THINKING
+        ):
+            errors.append(
+                f"llm.effort={self.llm.effort} requires llm.thinking=adaptive "
+                "(the API rejects it with thinking disabled)"
+            )
         if self.llm.provider == "vertex" and not self.llm.vertex_project:
             errors.append("llm.vertex_project is required when llm.provider=vertex")
         return errors
@@ -481,7 +545,15 @@ class AppConfig:
 
 
 _KNOWN_LLM_KEYS: Final[frozenset[str]] = frozenset(
-    {"provider", "model", "vertex_project", "vertex_region"}
+    {
+        "provider",
+        "model",
+        "models",
+        "thinking",
+        "effort",
+        "vertex_project",
+        "vertex_region",
+    }
 )
 
 _KNOWN_SETTINGS_KEYS: Final[frozenset[str]] = frozenset(
@@ -608,9 +680,15 @@ def _load_teams(entries: list[Any]) -> list[TeamSpec]:
 
 
 def _load_llm(block: dict[str, Any]) -> LLMSettings:
+    models = block.get("models") or {}
+    if not isinstance(models, dict):
+        raise ValueError("settings.llm.models must be a mapping of task -> model")
     return LLMSettings(
         provider=block.get("provider", "anthropic"),
         model=block.get("model", ""),
+        models={str(task): model for task, model in models.items()},
+        thinking=str(block.get("thinking", "off") or "off"),
+        effort=str(block.get("effort", "low") or ""),
         vertex_project=block.get(
             "vertex_project",
             os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID", "")
