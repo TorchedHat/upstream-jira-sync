@@ -184,6 +184,9 @@ keys live under `settings:`. Secrets never go in this file (see
 |---|---|---|
 | `llm.provider` | `anthropic` | `anthropic`, `vertex`, or any installed entry point |
 | `llm.model` | required | Model name passed to the provider |
+| `llm.models` | `{}` | Per-task model overrides, keyed by task: `match`, `estimate`, `summarize`, `dedupe`, `claim`, `team`, `rfc`, `digest`. Unlisted tasks use `llm.model`. One provider is built per distinct model. Recommended: `team`, `claim`, `rfc`, `summarize` on Haiku 4.5; the rest on the default model (see `config.example.yaml`). |
+| `llm.thinking` | `off` | `off` sends `thinking: disabled` to models that think by default (Sonnet 5); `adaptive` lets them think and pads `max_tokens` by 1024 so thinking cannot starve the answer. Opus 4.8, other 4.x models and Haiku get no thinking fields either way. |
+| `llm.effort` | `low` | Reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`), sent as `output_config.effort` to models that think by default. `xhigh`/`max` require `llm.thinking: adaptive`. Set to `""` to omit `effort` and let the model choose. |
 | `llm.vertex_project` | unset | Vertex only; or set `GOOGLE_CLOUD_PROJECT` |
 | `llm.vertex_region` | `us-east5` | Vertex only |
 
@@ -309,7 +312,14 @@ to the AI classes.
 ```yaml
 llm:
   provider: anthropic
-  model: claude-sonnet-4-6
+  model: claude-sonnet-5
+  thinking: off                # these are short classification calls
+  effort: low
+  models:                      # recommended split; the rest stay on llm.model
+    team: claude-haiku-4-5
+    claim: claude-haiku-4-5
+    rfc: claude-haiku-4-5
+    summarize: claude-haiku-4-5
 ```
 
 Set `ANTHROPIC_API_KEY`. No install extra needed.

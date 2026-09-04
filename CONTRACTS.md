@@ -364,7 +364,9 @@ field only.
 
 ### upstream_jira_sync/ai.py  (from sync/ai.py, 568 LOC)
 All classes consume the `LLMProvider` protocol; the model is bound inside the
-provider, so `model` disappears from constructors.
+provider, so `model` disappears from constructors. The CLI resolves the model
+per task from `llm.models` (falling back to `llm.model`) and hands each class
+the provider for its task, so two classes may hold different providers.
 ```python
 class _SkillBasedAI:
     _SKILL_NAME: str = ""

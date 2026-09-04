@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from dataclasses import replace
 
 import requests
 import yaml
@@ -16,12 +17,13 @@ from upstream_jira_sync.ai import (
     StoryPointEstimator,
     TeamClassifier,
 )
-from upstream_jira_sync.config import AppConfig
+from upstream_jira_sync.config import LLM_TASKS, AppConfig, LLMSettings
 from upstream_jira_sync.emailer import GmailNotifier
 from upstream_jira_sync.github import GitHubClient
 from upstream_jira_sync.jira import DryRunJiraClient, JiraClient
 from upstream_jira_sync.llm.base import (
     LLMFatalError,
+    LLMProvider,
     load_provider,
     provider_load_error,
 )
@@ -151,11 +153,10 @@ def run_sync(args: argparse.Namespace) -> int:
         config.llm.base_url = mock_url
         github_base_url = mock_url
 
-    llm = load_provider(config.llm)
-    _preflight_llm(llm)
+    llm = _load_task_providers(config.llm)
     skill_loader = SkillLoader(override_dir=config.skills_dir)
 
-    matcher = AITicketMatcher(llm=llm, skill_loader=skill_loader)
+    matcher = AITicketMatcher(llm=llm["match"], skill_loader=skill_loader)
     resolver = StatusResolver(
         significant_comments_threshold=config.significant_comments_threshold
     )
@@ -163,25 +164,25 @@ def run_sync(args: argparse.Namespace) -> int:
 
     estimator: StoryPointEstimator | None = None
     if config.enable_estimation:
-        estimator = StoryPointEstimator(llm=llm, skill_loader=skill_loader)
+        estimator = StoryPointEstimator(llm=llm["estimate"], skill_loader=skill_loader)
 
     classifier: IssueClaimClassifier | None = None
     summarizer: IssueSummarizer | None = None
     deduplicator: IssueDeduplicator | None = None
     if config.enable_auto_create:
-        classifier = IssueClaimClassifier(llm=llm, skill_loader=skill_loader)
-        summarizer = IssueSummarizer(llm=llm, skill_loader=skill_loader)
-        deduplicator = IssueDeduplicator(llm=llm, skill_loader=skill_loader)
+        classifier = IssueClaimClassifier(llm=llm["claim"], skill_loader=skill_loader)
+        summarizer = IssueSummarizer(llm=llm["summarize"], skill_loader=skill_loader)
+        deduplicator = IssueDeduplicator(llm=llm["dedupe"], skill_loader=skill_loader)
 
     team_classifier: TeamClassifier | None = None
     if config.enable_team_assignment:
         team_classifier = TeamClassifier(
-            llm=llm, skill_loader=skill_loader, teams=config.teams
+            llm=llm["team"], skill_loader=skill_loader, teams=config.teams
         )
 
     rfc_classifier: RfcClassifier | None = None
     if config.enable_rfc_epics:
-        rfc_classifier = RfcClassifier(llm=llm, skill_loader=skill_loader)
+        rfc_classifier = RfcClassifier(llm=llm["rfc"], skill_loader=skill_loader)
 
     jira_cls = DryRunJiraClient if args.dry_run else JiraClient
 
@@ -248,6 +249,17 @@ def _preflight_llm(llm: object) -> None:
     preflight = getattr(llm, "preflight", None)
     if callable(preflight):
         preflight()
+
+
+def _load_task_providers(settings: LLMSettings) -> dict[str, LLMProvider]:
+    """One preflighted provider per distinct model, shared by every task
+    that routes to that model (llm.models). Keyed by task name."""
+    by_model: dict[str, LLMProvider] = {}
+    for model in settings.distinct_models:
+        provider = load_provider(replace(settings, model=model, models={}))
+        _preflight_llm(provider)
+        by_model[model] = provider
+    return {task: by_model[settings.model_for(task)] for task in LLM_TASKS}
 
 
 def run_check_config(args: argparse.Namespace) -> int:
@@ -410,11 +422,14 @@ def _live_checks(config: AppConfig):
     def check_llm() -> str:
         # Constructs the provider (raises if the key env var is missing) and,
         # for providers that support it, hits the free model-lookup endpoint.
-        _preflight_llm(load_provider(config.llm))
+        _load_task_providers(config.llm)
         return ""
 
     checks = [
-        (f"llm {config.llm.provider} model {config.llm.model}", check_llm),
+        (
+            f"llm {config.llm.provider} model {', '.join(config.llm.distinct_models)}",
+            check_llm,
+        ),
         (f"jira project {config.jira_project_key}", check_project),
         ("jira statuses (status_map)", check_statuses),
         ("jira custom fields", check_fields),

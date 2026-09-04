@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from conftest import make_config
 from upstream_jira_sync.cli import parse_args
-from upstream_jira_sync.config import AppConfig, TeamSpec
+from upstream_jira_sync.config import LLM_TASKS, AppConfig, LLMSettings, TeamSpec
 from upstream_jira_sync.models import CanonicalStatus
 
 
@@ -155,6 +155,74 @@ class TestWorkflowSettings:
             config.validate()
 
 
+class TestLLMSettingsRouting:
+    def test_model_for_falls_back_to_default(self):
+        llm = LLMSettings(model="claude-sonnet-5", models={"team": "claude-haiku-4-5"})
+        assert llm.model_for("team") == "claude-haiku-4-5"
+        assert llm.model_for("match") == "claude-sonnet-5"
+
+    def test_for_task_binds_model_and_keeps_routing_fields(self):
+        llm = LLMSettings(
+            model="claude-sonnet-5",
+            models={"team": "claude-haiku-4-5"},
+            base_url="http://localhost:9999",
+        )
+        bound = llm.for_task("team")
+        assert bound.model == "claude-haiku-4-5"
+        assert bound.models == {}
+        assert bound.base_url == "http://localhost:9999"
+        assert llm.models == {"team": "claude-haiku-4-5"}  # original untouched
+
+    def test_distinct_models_default_first_no_repeats(self):
+        llm = LLMSettings(
+            model="claude-sonnet-5",
+            models={
+                "team": "claude-haiku-4-5",
+                "rfc": "claude-haiku-4-5",
+                "match": "claude-sonnet-5",
+            },
+        )
+        assert llm.distinct_models == ["claude-sonnet-5", "claude-haiku-4-5"]
+
+    def test_unknown_task_rejected(self):
+        config = make_config()
+        config.llm.models = {"matcher": "claude-haiku-4-5"}
+        with pytest.raises(ValueError, match="llm.models.matcher is not a task"):
+            config.validate()
+
+    def test_empty_task_model_rejected(self):
+        config = make_config()
+        config.llm.models = {"team": ""}
+        with pytest.raises(ValueError, match="llm.models.team must be a model name"):
+            config.validate()
+
+    def test_invalid_effort_rejected(self):
+        config = make_config()
+        config.llm.effort = "turbo"
+        with pytest.raises(ValueError, match="llm.effort must be one of"):
+            config.validate()
+
+    def test_invalid_thinking_rejected(self):
+        config = make_config()
+        config.llm.thinking = "on"
+        with pytest.raises(ValueError, match="llm.thinking must be one of"):
+            config.validate()
+
+    @pytest.mark.parametrize("effort", ["xhigh", "max"])
+    def test_high_effort_requires_thinking(self, effort):
+        config = make_config()
+        config.llm.effort = effort
+        with pytest.raises(ValueError, match="requires llm.thinking=adaptive"):
+            config.validate()
+        config.llm.thinking = "adaptive"
+        config.validate()
+
+    def test_all_tasks_accepted(self):
+        config = make_config()
+        config.llm.models = dict.fromkeys(LLM_TASKS, "claude-haiku-4-5")
+        config.validate()
+
+
 class TestAppConfigLoad:
     def _write_config(self, tmp_path, extra_settings: str = "") -> str:
         (tmp_path / "team_roster.yaml").write_text(
@@ -232,6 +300,42 @@ class TestAppConfigLoad:
         path = self._write_config(tmp_path, extra_settings="  enable_estimaton: true\n")
         with patch.dict(os.environ, self._ENV, clear=True):
             with pytest.raises(ValueError, match="did you mean 'enable_estimation'"):
+                AppConfig.load(path)
+
+    def test_load_llm_models_and_effort(self, tmp_path):
+        path = self._write_config(
+            tmp_path,
+            extra_settings=(
+                "    thinking: adaptive\n"
+                "    effort: medium\n"
+                "    models:\n"
+                "      team: claude-haiku-4-5\n"
+                "      rfc: claude-haiku-4-5\n"
+            ),
+        )
+        with patch.dict(os.environ, self._ENV, clear=True):
+            config = AppConfig.load(path)
+        assert config.llm.thinking == "adaptive"
+        assert config.llm.effort == "medium"
+        assert config.llm.models == {
+            "team": "claude-haiku-4-5",
+            "rfc": "claude-haiku-4-5",
+        }
+        assert config.llm.model_for("team") == "claude-haiku-4-5"
+        assert config.llm.model_for("match") == "test-model"
+
+    def test_llm_models_must_be_mapping(self, tmp_path):
+        path = self._write_config(
+            tmp_path, extra_settings="    models: [claude-haiku-4-5]\n"
+        )
+        with patch.dict(os.environ, self._ENV, clear=True):
+            with pytest.raises(ValueError, match="llm.models must be a mapping"):
+                AppConfig.load(path)
+
+    def test_unknown_llm_key_rejected(self, tmp_path):
+        path = self._write_config(tmp_path, extra_settings="    modles: {}\n")
+        with patch.dict(os.environ, self._ENV, clear=True):
+            with pytest.raises(ValueError, match="did you mean 'models'"):
                 AppConfig.load(path)
 
     def test_load_automation_opt_out_labels(self, tmp_path):

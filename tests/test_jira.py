@@ -89,8 +89,32 @@ class TestAdfBuilder:
         )
         content = payload["body"]["content"]
         assert len(content) == 4
-        assert "high" in content[2]["content"][0]["text"]
+        reasoning = content[2]["content"][0]["text"]
+        assert reasoning == (
+            "Linked to this ticket automatically. Title matches ticket goal."
+        )
         assert "closed without merge" in content[3]["content"][0]["text"]
+
+    def test_comment_never_prints_internal_verdict_tokens(self):
+        for confidence, reason in (
+            ("high", "Same subsystem and matching acceptance criteria."),
+            ("state", "Reused the ticket previously linked to this PR."),
+            ("auto", "Auto-created -- open upstream PR with no tracking ticket."),
+        ):
+            payload = AdfBuilder.pr_comment(
+                make_pr(), "In Review", match_confidence=confidence, match_reason=reason
+            )
+            text = json.dumps(payload)
+            assert "Match confidence" not in text
+            assert f"{confidence} —" not in text
+            assert "Auto-created --" not in text
+            assert "previously linked to this PR" not in text
+
+    def test_comment_status_line_reads_as_prose(self):
+        payload = AdfBuilder.pr_comment(make_pr(), "In Review")
+        line = payload["body"]["content"][1]["content"][0]["text"]
+        assert line == "Jira status set to In Review. PR last updated 2026-03-20."
+        assert "|" not in line
 
     def test_pr_description_structure(self):
         adf = AdfBuilder.pr_description(
