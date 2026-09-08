@@ -398,6 +398,41 @@ Body:
             return ""
 
 
+class DiscussionSummarizer(_SkillBasedAI):
+    """Summarizes recent comments from a GitHub issue discussion."""
+
+    _SKILL_NAME = "discussion_summarizer"
+    _PROMPT_TEMPLATE: Final[str] = """Summarize the following GitHub discussion comments into 2-3 key insights.
+Focus on: decisions made, blockers identified, next steps, technical direction.
+
+Comments (chronological order):
+{comments}
+
+Provide a concise summary (under 150 words) suitable for a Jira comment."""
+
+    def summarize(self, comments: list[dict[str, str]]) -> str:
+        """Summarize a list of comments. Each comment dict has: author, created_at, body."""
+        if not comments:
+            return ""
+
+        try:
+            comments_text = "\n".join(
+                f"**{c['author']}** ({c['created_at']}):\n{c['body']}"
+                for c in comments
+            )
+            prompt = self._PROMPT_TEMPLATE.format(
+                comments=comments_text[:MAX_COMMENT_CHARS]
+            )
+            return self._llm.complete(
+                system=self._system,
+                user_message=prompt,
+                max_tokens=200,
+            )
+        except Exception as exc:
+            log.warning("  Discussion summarization failed (%s)", exc)
+            return ""
+
+
 class WeeklyDigestSummarizer(_SkillBasedAI):
     """Turns a structured delta table into a neutral 3-5 sentence narrative."""
 

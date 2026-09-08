@@ -117,6 +117,19 @@ settings:
   enable_auto_create: false
   claim_mode: shadow           # shadow | auto
 
+  # ── Deduplication (prevent ticket recreation across releases) ─────────────
+  # Custom field ID where the bot stores the upstream GitHub issue number.
+  # Used to prevent duplicate Jira tickets when re-running bot for new releases.
+  # Leave empty to disable deduplication:
+  # upstream_issue_number_field: customfield_XXXXX
+
+  # ── Ticket watchers (automatic visibility) ────────────────────────────────
+  # Email addresses automatically added as watchers to newly created tickets.
+  # Enables internal stakeholder visibility without explicit assignment.
+  default_watchers:
+    - managarw@redhat.com  # Mansi Agarwal
+    - grajaiya@redhat.com  # Gowrishankar Rajaiyan
+
   # Close a ticket whose linked PR(s) have been idle this many days. 0 = off.
   stale_pr_close_days: 21
   stale_pr_close_mode: shadow  # shadow | auto
