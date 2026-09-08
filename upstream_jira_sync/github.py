@@ -831,3 +831,38 @@ class GitHubClient(BaseHTTPClient):
             headers={"Accept": "application/vnd.github.v3.diff"},
         )
         return resp.text
+
+    def get_issue_comments(
+        self, repo: str, issue_number: int, max_comments: int = 10
+    ) -> list[dict[str, Any]]:
+        """Fetch recent comments from a GitHub issue.
+
+        Returns list of dicts with: author, created_at, body.
+        Sorted by creation time (oldest first). Limited to max_comments.
+        """
+        try:
+            url = f"{self._api_base}/repos/{repo}/issues/{issue_number}/comments"
+            resp = self._request(
+                "GET",
+                url,
+                params={
+                    "sort": "created",
+                    "direction": "desc",
+                    "per_page": max_comments,
+                },
+            )
+            data = resp.json()
+            # Reverse to get chronological order (oldest first)
+            return [
+                {
+                    "author": (c.get("user") or {}).get("login", "unknown"),
+                    "created_at": c.get("created_at", ""),
+                    "body": c.get("body", "")[:2000],  # Limit comment body
+                }
+                for c in reversed(data) if c
+            ]
+        except (requests.RequestException, ValueError) as exc:
+            log.warning(
+                "  Failed to fetch comments for %s#%d (%s)", repo, issue_number, exc
+            )
+            return []
