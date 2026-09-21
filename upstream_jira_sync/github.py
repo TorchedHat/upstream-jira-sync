@@ -79,13 +79,27 @@ def _node_list(node: dict, key: str) -> list[dict]:
     return [n for n in ((node.get(key) or {}).get("nodes") or []) if n]
 
 
+# PR activity that counts as human only when its author is not a bot, paired
+# with the field holding its timestamp. timelineItems are ready-for-review events.
+_HUMAN_ACTIVITY_CONNECTIONS: Final[tuple[tuple[str, str], ...]] = (
+    ("comments", "createdAt"),
+    ("reviews", "submittedAt"),
+    ("timelineItems", "createdAt"),
+)
+
+
 def _last_human_activity(node: dict, ignored_logins: frozenset[str]) -> str:
-    """Latest PR timestamp not attributable to a bot: creation, close, head commit,
-    non-bot comments and reviews. Empty string when the node has no such fields
-    (GitHub timestamps share one format, so plain string max is safe)."""
+    """Return the latest timestamp of human activity on a PR.
+
+    Counts creation, close, commits, and any comment, review, or
+    ready-for-review event not made by a bot. Returns an empty string when the
+    node has none of these. GitHub timestamps share one format, so comparing
+    them as strings is safe.
+    """
 
     def is_human(n: dict) -> bool:
-        return not _is_bot_author(n.get("author"), ignored_logins)
+        # Timeline events carry `actor` instead of `author`.
+        return not _is_bot_author(n.get("author") or n.get("actor"), ignored_logins)
 
     return max(
         node.get("createdAt") or "",
@@ -95,14 +109,10 @@ def _last_human_activity(node: dict, ignored_logins: frozenset[str]) -> str:
             for c in _node_list(node, "commits")
         ),
         *(
-            c.get("createdAt") or ""
-            for c in _node_list(node, "comments")
-            if is_human(c)
-        ),
-        *(
-            r.get("submittedAt") or ""
-            for r in _node_list(node, "reviews")
-            if is_human(r)
+            n.get(timestamp_field) or ""
+            for connection, timestamp_field in _HUMAN_ACTIVITY_CONNECTIONS
+            for n in _node_list(node, connection)
+            if is_human(n)
         ),
     )
 
@@ -167,6 +177,14 @@ _PR_ACTIVITY_FIELDS: Final[str] = """
                 author { login __typename }
                 state
                 submittedAt
+              }
+            }
+            timelineItems(last: 5, itemTypes: [READY_FOR_REVIEW_EVENT]) {
+              nodes {
+                ... on ReadyForReviewEvent {
+                  createdAt
+                  actor { login __typename }
+                }
               }
             }
 """
