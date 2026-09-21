@@ -112,6 +112,26 @@ class TestParsePRNode:
         pr, _, _ = client._parse_pr_node(node)
         assert pr.last_human_activity_at == "2026-03-10T10:00:00Z"
 
+    def test_last_human_activity_counts_ready_for_review(self):
+        # Marking a draft ready counts as human activity; a bot doing so does not.
+        node = make_graphql_pr_node(state="OPEN")
+        node["createdAt"] = "2026-03-01T10:00:00Z"
+        node["timelineItems"] = {
+            "nodes": [
+                {
+                    "createdAt": "2026-03-05T10:00:00Z",
+                    "actor": {"login": "contributor", "__typename": "User"},
+                },
+                {
+                    "createdAt": "2026-03-09T10:00:00Z",
+                    "actor": {"login": "merge-bot", "__typename": "User"},
+                },
+            ]
+        }
+        client = _client(ignore_activity_authors=["merge-bot"])
+        pr, _, _ = client._parse_pr_node(node)
+        assert pr.last_human_activity_at == "2026-03-05T10:00:00Z"
+
     def test_commit_authors_keeps_humans_only(self):
         # PR author stays in commit_authors: author-exclusion is the orchestrator's job.
         node = make_graphql_pr_node(
