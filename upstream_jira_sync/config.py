@@ -157,6 +157,12 @@ class AppConfig:
     enable_auto_create: bool = False
     claim_mode: str = "shadow"
 
+    # Deduplication (prevent recreating tickets from prior releases)
+    upstream_issue_number_field: str = ""  # custom field ID for storing upstream issue #
+
+    # Watchers (add automatically to newly created tickets)
+    default_watchers: list[str] = field(default_factory=list)
+
     # Stale-PR close sweep (0 days disables)
     stale_pr_close_days: int = 21
     stale_pr_close_mode: str = "shadow"

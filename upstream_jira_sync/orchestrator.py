@@ -7,6 +7,7 @@ from typing import Any
 from upstream_jira_sync.adf import AdfBuilder
 from upstream_jira_sync.ai import (
     AITicketMatcher,
+    DiscussionSummarizer,
     IssueClaimClassifier,
     IssueDeduplicator,
     IssueSummarizer,
@@ -73,6 +74,7 @@ class SyncOrchestrator:
         override_gate: ManualOverrideGate | None = None,
         team_classifier: TeamClassifier | None = None,
         rfc_classifier: RfcClassifier | None = None,
+        discussion_summarizer: DiscussionSummarizer | None = None,
         emailer: GmailNotifier | None = None,
         members: list[TeamMember] | None = None,
     ) -> None:
@@ -92,6 +94,7 @@ class SyncOrchestrator:
         self._override_gate = override_gate
         self._team_classifier = team_classifier
         self._rfc_classifier = rfc_classifier
+        self._discussion_summarizer = discussion_summarizer
         self._emailer = emailer
         self._rfc_epics = RfcEpicTracker(
             config=config,
@@ -327,6 +330,17 @@ class SyncOrchestrator:
             issue_url,
             self._config.jira_project_key,
         )
+        # Check for existing ticket by upstream issue number (prevents release-to-release dupes)
+        if (
+            not existing
+            and self._config.upstream_issue_number_field
+        ):
+            existing = self._jira.find_ticket_by_custom_field(
+                self._config.jira_project_key,
+                self._config.upstream_issue_number_field,
+                str(issue_number),
+            )
+
         if not existing and self._deduplicator:
             candidates = self._jira.find_candidate_tickets(
                 self._config.jira_project_key, issue_title
@@ -399,6 +413,10 @@ class SyncOrchestrator:
         )
         summary.issues_created += 1
         self._state.set_issue_ticket(issue_url, ticket.key)
+
+        # Post-creation customizations
+        self._post_create_ticket(ticket, issue_url, issue_number)
+
         self._digest_event(
             "ticket_created",
             ticket_key=ticket.key,
@@ -430,6 +448,91 @@ class SyncOrchestrator:
             )
         except Exception:
             log.exception("  Failed to link issue #%d to %s", issue_number, ticket.key)
+
+    def _post_create_ticket(
+        self,
+        ticket: JiraTicket,
+        issue_url: str,
+        issue_number: int,
+    ) -> None:
+        """Post-creation customizations: deduplication tracking, watchers, discussion summary."""
+        # Store upstream issue number in custom field for deduplication checks
+        if self._config.upstream_issue_number_field:
+            try:
+                self._jira._request(
+                    "PUT",
+                    f"{self._jira._base}/rest/api/3/issue/{ticket.key}",
+                    params={"notifyUsers": "false"},
+                    json={
+                        "fields": {
+                            self._config.upstream_issue_number_field: str(issue_number)
+                        }
+                    },
+                )
+                log.info(
+                    "  %s: set upstream_issue_number to %d",
+                    ticket.key,
+                    issue_number,
+                )
+            except Exception:
+                log.exception(
+                    "  Failed to set upstream_issue_number on %s",
+                    ticket.key,
+                )
+
+        # Add default watchers
+        if self._config.default_watchers:
+            try:
+                self._jira.add_watchers(ticket.key, self._config.default_watchers)
+            except Exception:
+                log.exception("  Failed to add watchers to %s", ticket.key)
+
+        # Post discussion summary as Jira comment if discussion summarizer is available
+        if self._discussion_summarizer:
+            self._post_discussion_summary(ticket, issue_url, issue_number)
+
+    def _post_discussion_summary(
+        self,
+        ticket: JiraTicket,
+        issue_url: str,
+        issue_number: int,
+    ) -> None:
+        """Fetch upstream issue comments, summarize, and post as Jira comment."""
+        repo = repo_from_github_url(issue_url)
+        if not repo:
+            log.warning("  Could not extract repo from %s", issue_url)
+            return
+
+        try:
+            # Fetch recent comments from the upstream issue
+            comments = self._github.get_issue_comments(repo, issue_number, max_comments=10)
+            if not comments:
+                log.info("  No comments found on issue #%d", issue_number)
+                return
+
+            # Summarize the discussion
+            summary = self._discussion_summarizer.summarize(comments)
+            if not summary:
+                log.info("  Could not summarize discussion for issue #%d", issue_number)
+                return
+
+            # Post summary as Jira comment
+            comment_text = (
+                f"## Upstream Discussion Summary\n\n{summary}\n\n"
+                f"[View full discussion]({issue_url})"
+            )
+            self._jira.post_note(ticket, comment_text)
+            log.info(
+                "  %s: posted upstream discussion summary for issue #%d",
+                ticket.key,
+                issue_number,
+            )
+        except Exception:
+            log.exception(
+                "  Failed to post discussion summary for issue #%d to %s",
+                issue_number,
+                ticket.key,
+            )
 
     def _link_existing_ticket(
         self,
@@ -1100,6 +1203,14 @@ class SyncOrchestrator:
             initial_status_name=self._status_name(CanonicalStatus.TODO),
         )
         self._state.record_pr_tracked(pr.url, ticket.key)
+
+        # Add watchers to PR-tracked tickets
+        if self._config.default_watchers:
+            try:
+                self._jira.add_watchers(ticket.key, self._config.default_watchers)
+            except Exception:
+                log.exception("  Failed to add watchers to %s", ticket.key)
+
         self._digest_event(
             "ticket_created",
             ticket_key=ticket.key,
