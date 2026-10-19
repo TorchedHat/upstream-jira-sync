@@ -365,16 +365,17 @@ def run_digest(
     if config.digest_include_manual and config.jira_token:
         from upstream_jira_sync.jira import JiraClient
 
-        jql = (
-            f'project = "{config.jira_project_key}" '
-            f'AND updated >= "{window_start.strftime("%Y-%m-%d %H:%M")}"'
-        )
         with JiraClient(
             url=config.jira_url,
             email=config.jira_email,
             token=config.jira_token,
             container_issue_type=config.container_issue_type,
+            search_projects=tuple(config.jira_search_projects),
         ) as jira:
+            jql = (
+                f"{jira.project_clause(config.jira_project_key)} "
+                f'AND updated >= "{window_start.strftime("%Y-%m-%d %H:%M")}"'
+            )
             changes = jira.search_ticket_changes(
                 jql=jql,
                 since_iso=window_start.isoformat(),

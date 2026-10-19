@@ -54,10 +54,12 @@ class JiraClient(BaseHTTPClient):
         container_issue_type: str = "Epic",
         open_status_names: tuple[str, ...] = (),
         automation_opt_out_labels: tuple[str, ...] = (),
+        search_projects: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self._base = url.rstrip("/")
         self._sprint_field = sprint_field
+        self._search_projects = search_projects
         self._user_cache: dict[str, dict | None] = {}
         self._container_issue_type = container_issue_type
         # Candidate-pool filter: the configured status_map names when provided
@@ -81,6 +83,12 @@ class JiraClient(BaseHTTPClient):
         self._transition_target_ids: dict[str, str] = {}
         self._session.auth = (email, token)
         self._session.headers.update({"Content-Type": "application/json"})
+
+    def project_clause(self, project_key: str) -> str:
+        """JQL scope: the given project plus any configured extra search projects."""
+        projects = (project_key, *self._search_projects)
+        quoted = ", ".join(f'"{_jql_escape(p)}"' for p in projects)
+        return f"project = {quoted}" if len(projects) == 1 else f"project in ({quoted})"
 
     # -- Read operations -------------------------------------------------------
 
@@ -118,7 +126,7 @@ class JiraClient(BaseHTTPClient):
         fetch_remote_links: bool = True,
     ) -> list[JiraTicket]:
         email = sanitize_identifier(assignee_email, "jira_email")
-        scope = f'project = "{project_key}" AND ' if project_key else ""
+        scope = f"{self.project_clause(project_key)} AND " if project_key else ""
         jql = (
             f'{scope}assignee = "{email}" '
             f"{self._open_status_clause} "
@@ -146,7 +154,7 @@ class JiraClient(BaseHTTPClient):
         email = sanitize_identifier(assignee_email, "jira_email")
         status_list = ", ".join(f'"{s}"' for s in statuses)
         jql = (
-            f'project = "{project_key}" AND assignee = "{email}" '
+            f'{self.project_clause(project_key)} AND assignee = "{email}" '
             f"AND status in ({status_list}) "
             f'AND (status CHANGED TO ({status_list}) AFTER "{since_iso}" '
             f'OR created >= "{since_iso}") '
@@ -211,7 +219,7 @@ class JiraClient(BaseHTTPClient):
     ) -> JiraTicket | None:
         escaped = _jql_escape(canonical_url)
         jql = (
-            f'project = "{project_key}" '
+            f"{self.project_clause(project_key)} "
             f'AND issue in issuesWithRemoteLinksByGlobalId("{escaped}") '
             f"{self._exclude_containers}"
         )
@@ -222,7 +230,7 @@ class JiraClient(BaseHTTPClient):
     ) -> JiraTicket | None:
         escaped = _jql_escape(canonical_url)
         jql = (
-            f'project = "{project_key}" '
+            f"{self.project_clause(project_key)} "
             f'AND (summary ~ "\\"{escaped}\\"" OR description ~ "\\"{escaped}\\"") '
             f"{self._exclude_containers}"
         )
@@ -238,7 +246,7 @@ class JiraClient(BaseHTTPClient):
         global_id = RFC_EPIC_GLOBAL_ID_PREFIX + canonical_github_url(rfc_url)
         escaped = _jql_escape(global_id)
         jql = (
-            f'project = "{project_key}" '
+            f"{self.project_clause(project_key)} "
             f'AND issue in issuesWithRemoteLinksByGlobalId("{escaped}") '
             f"{self._only_containers}"
         )
@@ -262,7 +270,7 @@ class JiraClient(BaseHTTPClient):
         if not words:
             return []
         jql = (
-            f'project = "{project_key}" '
+            f"{self.project_clause(project_key)} "
             f'AND text ~ "{_jql_escape(words)}" '
             f"{self._exclude_containers} ORDER BY updated DESC"
         )

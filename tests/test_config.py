@@ -417,3 +417,19 @@ class TestParseArgs:
         assert args.command == "check-config"
         assert args.config == "x.yaml"
         assert args.live is True
+
+
+class TestSearchProjects:
+    def test_home_project_first(self):
+        config = make_config(jira_search_projects=["OLD"])
+        config.validate()
+        assert config.jira_projects == ["PROJ", "OLD"]
+
+    def test_defaults_to_home_project_only(self):
+        assert make_config().jira_projects == ["PROJ"]
+
+    @pytest.mark.parametrize("entries", [[""], ["PROJ"]])
+    def test_rejects_blank_and_home_entries(self, entries):
+        config = make_config(jira_search_projects=entries)
+        with pytest.raises(ValueError, match="jira_search_projects"):
+            config.validate()

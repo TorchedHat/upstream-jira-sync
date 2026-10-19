@@ -9,6 +9,9 @@ breaking).
 
 ### Added
 
+- `jira_search_projects`: extra Jira projects searched for existing tickets;
+  new tickets keep going to `jira_project_key`. `check-config --live` checks
+  the status names in every listed project.
 - `llm.models`: per-task model routing. Any of `match`, `estimate`, `summarize`,
   `dedupe`, `claim`, `team`, `rfc`, `digest` can name its own model; the rest
   fall back to `llm.model`. The CLI builds and preflights one provider per
