@@ -116,6 +116,8 @@ class AppConfig:
     jira_token: str
     jira_project_key: str
     jira_account_id: str = ""
+    # Also searched for existing tickets; new tickets go to jira_project_key.
+    jira_search_projects: list[str] = field(default_factory=list)
     jira_bot_aliases: list[str] = field(default_factory=list)
     jira_components: list[str] = field(default_factory=list)
 
@@ -238,6 +240,11 @@ class AppConfig:
     def status_name(self, status: CanonicalStatus) -> str:
         """Instance status name for a canonical state (R4)."""
         return self.status_map[status.value]
+
+    @property
+    def jira_projects(self) -> list[str]:
+        """Every project the bot reads from: the home project first, then the extras."""
+        return [self.jira_project_key, *self.jira_search_projects]
 
     @property
     def active_status_names(self) -> list[str]:
@@ -428,6 +435,14 @@ class AppConfig:
                 errors.append("low_conf_email_from is required in auto mode")
         if self.digest_enabled and not self.digest_repo:
             errors.append("digest_repo is required when digest_enabled is on")
+        if any(
+            not isinstance(p, str) or p in ("", self.jira_project_key)
+            for p in self.jira_search_projects
+        ):
+            errors.append(
+                "jira_search_projects entries must be non-empty project keys "
+                "other than jira_project_key"
+            )
         return errors
 
     # -- Loading -----------------------------------------------------------------
@@ -472,6 +487,7 @@ class AppConfig:
             jira_email=os.environ.get("JIRA_EMAIL", ""),
             jira_token=os.environ.get("JIRA_API_TOKEN", ""),
             jira_project_key=settings.get("jira_project_key", ""),
+            jira_search_projects=settings.get("jira_search_projects", []) or [],
             jira_account_id=os.environ.get("JIRA_ACCOUNT_ID", ""),
             jira_bot_aliases=settings.get("jira_bot_aliases", []) or [],
             jira_components=settings.get("jira_components", []) or [],
@@ -562,6 +578,7 @@ _KNOWN_SETTINGS_KEYS: Final[frozenset[str]] = frozenset(
         "github_repo",
         "jira_url",
         "jira_project_key",
+        "jira_search_projects",
         "jira_bot_aliases",
         "jira_components",
         "status_map",

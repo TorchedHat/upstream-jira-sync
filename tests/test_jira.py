@@ -656,3 +656,27 @@ class TestDryRunJiraClient:
         client.set_team("PROJ-100", "team-uuid-alpha", "customfield_11111")
         client.set_parent("PROJ-100", "PROJ-9")
         client._request.assert_not_called()
+
+
+class TestSearchProjects:
+    def test_single_project_clause_is_unchanged(self):
+        client = _client()
+        assert client.project_clause("PROJ") == 'project = "PROJ"'
+
+    def test_extra_projects_widen_every_search_but_not_creation(self):
+        client = _client(search_projects=("OLD",))
+        assert client.project_clause("PROJ") == 'project in ("PROJ", "OLD")'
+
+        client._request = MagicMock(return_value=_resp({"issues": []}))
+        client.get_open_tickets("octocat@example.com", "PROJ")
+        client.find_candidate_tickets("PROJ", "fix the widget")
+        client.get_sprint_sweep_candidates(
+            "octocat@example.com", "PROJ", ["Review"], "2026-01-01T00:00:00+00:00"
+        )
+        for call in client._request.call_args_list:
+            assert 'project in ("PROJ", "OLD")' in call.kwargs["params"]["jql"]
+
+        client._request = MagicMock(return_value=_resp({"key": "PROJ-9"}))
+        client.create_ticket("PROJ", "s", {}, "")
+        body = client._request.call_args.kwargs["json"]["fields"]
+        assert body["project"] == {"key": "PROJ"}

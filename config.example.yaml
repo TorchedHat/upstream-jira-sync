@@ -16,6 +16,9 @@ settings:
   jira_url: https://yourcompany.atlassian.net
   jira_project_key: PROJ
 
+  # Also searched for existing tickets; new tickets go to jira_project_key.
+  jira_search_projects: []
+
   # When rotating the service account, add the old email/accountId here so old
   # changelog entries still count as bot writes for the manual-override gate.
   jira_bot_aliases: []

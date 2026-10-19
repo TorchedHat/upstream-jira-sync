@@ -206,6 +206,7 @@ def run_sync(args: argparse.Namespace) -> int:
             container_issue_type=config.container_issue_type,
             open_status_names=tuple(config.active_status_names),
             automation_opt_out_labels=tuple(config.automation_opt_out_labels),
+            search_projects=tuple(config.jira_search_projects),
         ) as jira,
     ):
         if config.team_field:
@@ -328,35 +329,34 @@ def _live_checks(config: AppConfig):
         return resp
 
     def check_project() -> str:
-        jira_get(f"/rest/api/3/project/{config.jira_project_key}")
+        for project in config.jira_projects:
+            jira_get(f"/rest/api/3/project/{project}")
         return ""
 
     def check_statuses() -> str:
         # Per-project statuses, not the instance-global /rest/api/3/status: a
         # name existing in another project's workflow is useless for transitions.
-        by_issue_type = jira_get(
-            f"/rest/api/3/project/{config.jira_project_key}/statuses"
-        ).json()
-        entry = next(
-            (
-                t
-                for t in by_issue_type
-                if t.get("name", "").lower() == config.issue_type.lower()
-            ),
-            None,
-        )
-        if entry is None:
-            return (
-                f"issue type {config.issue_type!r} not found in project "
-                f"{config.jira_project_key}"
+        for project in config.jira_projects:
+            by_issue_type = jira_get(f"/rest/api/3/project/{project}/statuses").json()
+            entry = next(
+                (
+                    t
+                    for t in by_issue_type
+                    if t.get("name", "").lower() == config.issue_type.lower()
+                ),
+                None,
             )
-        known = {s["name"].lower() for s in entry.get("statuses", [])}
-        missing = [v for v in config.status_map.values() if v.lower() not in known]
-        if missing:
-            return (
-                f"status names not in the {config.issue_type!r} workflow of "
-                f"project {config.jira_project_key}: {missing}"
-            )
+            if entry is None:
+                return (
+                    f"issue type {config.issue_type!r} not found in project {project}"
+                )
+            known = {s["name"].lower() for s in entry.get("statuses", [])}
+            missing = [v for v in config.status_map.values() if v.lower() not in known]
+            if missing:
+                return (
+                    f"status names not in the {config.issue_type!r} workflow of "
+                    f"project {project}: {missing}"
+                )
         return ""
 
     def check_fields() -> str:
@@ -430,7 +430,7 @@ def _live_checks(config: AppConfig):
             f"llm {config.llm.provider} model {', '.join(config.llm.distinct_models)}",
             check_llm,
         ),
-        (f"jira project {config.jira_project_key}", check_project),
+        (f"jira project(s) {', '.join(config.jira_projects)}", check_project),
         ("jira statuses (status_map)", check_statuses),
         ("jira custom fields", check_fields),
     ]
