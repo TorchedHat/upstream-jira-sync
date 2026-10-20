@@ -180,6 +180,14 @@ class JiraClient(BaseHTTPClient):
             if link.get("object", {}).get("url")
         ]
 
+    def get_issue(self, issue_key: str) -> dict | None:
+        """Fetch a Jira issue by key, returning the full API response or None if not found."""
+        try:
+            resp = self._request(f"/rest/api/3/issue/{issue_key}")
+            return resp.json()
+        except requests.RequestException:
+            return None
+
     def find_tracking_ticket(
         self, issue_url: str, project_key: str
     ) -> JiraTicket | None:
@@ -213,6 +221,21 @@ class JiraClient(BaseHTTPClient):
             return fallback
 
         return None
+
+    def find_ticket_by_custom_field(
+        self,
+        project_key: str,
+        field_id: str,
+        field_value: str,
+    ) -> JiraTicket | None:
+        """Find a ticket by custom field value. Useful for deduplication."""
+        escaped = _jql_escape(field_value)
+        jql = (
+            f'project = "{project_key}" '
+            f'AND "{field_id}" = "{escaped}" '
+            f"{self._exclude_containers}"
+        )
+        return self._first_ticket_from_jql(jql)
 
     def _find_by_remote_link(
         self, canonical_url: str, project_key: str
@@ -698,6 +721,58 @@ class JiraClient(BaseHTTPClient):
         )
         log.info("  %s: linked %s (%s)", ticket.key, url, relationship)
 
+    def add_watchers(
+        self,
+        ticket_key: str,
+        watcher_emails: list[str],
+    ) -> None:
+        """Add watchers to a Jira ticket by email address. Continue on failures."""
+        if not watcher_emails:
+            return
+
+        for email in watcher_emails:
+            try:
+                # Look up user by email
+                users = self._request(
+                    "GET",
+                    f"{self._base}/rest/api/3/user/search",
+                    params={"query": email, "maxResults": 1},
+                ).json()
+
+                if not users:
+                    log.warning("  Could not find user with configured email")
+                    continue
+
+                account_id = users[0].get("accountId")
+                if not account_id:
+                    log.warning("  User lookup found no accountId")
+                    continue
+
+                # Add as watcher (Jira API expects accountId as a JSON string, not object)
+                self._request(
+                    "POST",
+                    f"{self._base}/rest/api/3/issue/{ticket_key}/watchers",
+                    json=account_id,
+                )
+                log.info("  %s: added watcher", ticket_key)
+            except Exception as exc:
+                log.warning("  Failed to add watcher to %s: %s", ticket_key, exc)
+
+    def set_custom_field(
+        self,
+        ticket_key: str,
+        field_id: str,
+        field_value: str,
+    ) -> None:
+        """Set a custom field value on a Jira ticket."""
+        self._request(
+            "PUT",
+            f"{self._base}/rest/api/3/issue/{ticket_key}",
+            params={"notifyUsers": "false"},
+            json={"fields": {field_id: field_value}},
+        )
+        log.info("  %s: set custom field %s", ticket_key, field_id)
+
     def transition_ticket(
         self,
         ticket: JiraTicket,
@@ -768,6 +843,10 @@ class JiraClient(BaseHTTPClient):
 
 class DryRunJiraClient(JiraClient):
     """Drop-in replacement for JiraClient that logs what it would do."""
+
+    def get_issue(self, issue_key: str) -> dict | None:
+        log.info("  [DRY RUN] Would fetch issue %s", issue_key)
+        return None
 
     def set_story_points(
         self,
@@ -867,6 +946,30 @@ class DryRunJiraClient(JiraClient):
             ticket.key,
             url,
             relationship,
+        )
+
+    def add_watchers(
+        self,
+        ticket_key: str,
+        watcher_emails: list[str],
+    ) -> None:
+        log.info(
+            "  [DRY RUN] Would add %d watcher(s) to %s",
+            len(watcher_emails),
+            ticket_key,
+        )
+
+    def set_custom_field(
+        self,
+        ticket_key: str,
+        field_id: str,
+        field_value: str,
+    ) -> None:
+        log.info(
+            "  [DRY RUN] Would set custom field %s on %s to %s",
+            field_id,
+            ticket_key,
+            field_value,
         )
 
     def transition_ticket(

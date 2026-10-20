@@ -120,6 +120,20 @@ settings:
   enable_auto_create: false
   claim_mode: shadow           # shadow | auto
 
+  # ── Deduplication (prevent ticket recreation across releases) ─────────────
+  # Custom field ID where the bot stores the upstream GitHub issue number.
+  # Used to prevent duplicate Jira tickets when re-running bot for new releases.
+  # Leave empty to disable deduplication:
+  # upstream_issue_number_field: customfield_XXXXX
+
+  # ── Ticket watchers (automatic visibility) ────────────────────────────────
+  # Email addresses automatically added as watchers to newly created tickets.
+  # Enables internal stakeholder visibility without explicit assignment.
+  default_watchers: []
+  # default_watchers:
+  #   - someone@example.com
+  #   - another@example.com
+
   # Close a ticket whose linked PR(s) have been idle this many days. 0 = off.
   stale_pr_close_days: 21
   stale_pr_close_mode: shadow  # shadow | auto
@@ -192,3 +206,10 @@ settings:
   enable_low_conf_email: false
   low_conf_email_mode: shadow  # shadow | auto
   # low_conf_email_from: bot@example.com
+
+  # ── Bot control via Jira (enable/disable, sync frequency) ────────────────────
+  # Allow Jira to control whether the bot runs and how often it syncs.
+  # bot_control_enabled: false
+  # bot_control_issue: PROJ-123              # Jira issue key with control fields
+  # bot_control_flag_field: customfield_XXXXX  # Select field: enabled|disabled|suspended
+  # bot_control_interval_field: customfield_YYYYY  # Number field: sync frequency in hours (optional)

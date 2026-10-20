@@ -10,6 +10,7 @@ import yaml
 
 from upstream_jira_sync.ai import (
     AITicketMatcher,
+    DiscussionSummarizer,
     IssueClaimClassifier,
     IssueDeduplicator,
     IssueSummarizer,
@@ -18,6 +19,7 @@ from upstream_jira_sync.ai import (
     TeamClassifier,
 )
 from upstream_jira_sync.config import LLM_TASKS, AppConfig, LLMSettings
+from upstream_jira_sync.control import BotControl
 from upstream_jira_sync.emailer import GmailNotifier
 from upstream_jira_sync.github import GitHubClient
 from upstream_jira_sync.jira import DryRunJiraClient, JiraClient
@@ -184,6 +186,12 @@ def run_sync(args: argparse.Namespace) -> int:
     if config.enable_rfc_epics:
         rfc_classifier = RfcClassifier(llm=llm["rfc"], skill_loader=skill_loader)
 
+    discussion_summarizer: DiscussionSummarizer | None = None
+    if config.enable_auto_create:
+        discussion_summarizer = DiscussionSummarizer(
+            llm=llm["summarize"], skill_loader=skill_loader
+        )
+
     jira_cls = DryRunJiraClient if args.dry_run else JiraClient
 
     emailer: GmailNotifier | None = None
@@ -212,6 +220,26 @@ def run_sync(args: argparse.Namespace) -> int:
         if config.team_field:
             jira._team_field = config.team_field
 
+        # Check bot control (enable/disable, frequency override) from Jira
+        try:
+            bot_control = BotControl(jira=jira, config=config)
+            control_state = bot_control.get_control_state()
+
+            if not control_state["enabled"]:
+                log.info("Bot disabled via Jira control issue, exiting")
+                return 0
+
+            if control_state["sync_interval_hours"]:
+                log.info(
+                    "Overriding poll interval from %d to %d hours (from Jira control)",
+                    config.poll_interval_hours,
+                    control_state["sync_interval_hours"],
+                )
+                config.poll_interval_hours = control_state["sync_interval_hours"]
+        except RuntimeError as e:
+            log.error("Bot control check failed: %s", e)
+            return 1
+
         gate: ManualOverrideGate | None = None
         if config.enable_manual_override:
             gate = ManualOverrideGate(
@@ -235,6 +263,7 @@ def run_sync(args: argparse.Namespace) -> int:
             override_gate=gate,
             team_classifier=team_classifier,
             rfc_classifier=rfc_classifier,
+            discussion_summarizer=discussion_summarizer,
             emailer=emailer,
             members=members,
         )

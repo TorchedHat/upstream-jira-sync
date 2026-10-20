@@ -204,3 +204,43 @@ class AdfBuilder:
                 },
             ],
         }
+
+    @staticmethod
+    def discussion_summary(summary: str, issue_url: str) -> dict:
+        """Build ADF for upstream discussion summary comment.
+
+        Includes a heading, the summary text, and a link back to upstream.
+        """
+        return {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "heading",
+                        "attrs": {"level": 2},
+                        "content": [
+                            {"type": "text", "text": "Upstream Discussion Summary"}
+                        ],
+                    },
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {"type": "text", "text": summary or "No discussions found."}
+                        ],
+                    },
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "View full discussion",
+                                "marks": [
+                                    {"type": "link", "attrs": {"href": issue_url}}
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            }
+        }

@@ -159,6 +159,14 @@ class AppConfig:
     enable_auto_create: bool = False
     claim_mode: str = "shadow"
 
+    # Deduplication (prevent recreating tickets from prior releases)
+    upstream_issue_number_field: str = (
+        ""  # custom field ID for storing upstream issue #
+    )
+
+    # Watchers (add automatically to newly created tickets)
+    default_watchers: list[str] = field(default_factory=list)
+
     # Stale-PR close sweep (0 days disables)
     stale_pr_close_days: int = 21
     stale_pr_close_mode: str = "shadow"
@@ -209,6 +217,12 @@ class AppConfig:
     enable_low_conf_email: bool = False
     low_conf_email_mode: str = "shadow"
     low_conf_email_from: str = ""
+
+    # Bot control via Jira (enable/disable, sync frequency override)
+    bot_control_enabled: bool = False
+    bot_control_issue: str = ""
+    bot_control_flag_field: str = ""
+    bot_control_interval_field: str = ""
 
     _REQUIRED_FIELDS: ClassVar[list[tuple[str, str]]] = [
         ("github_repo", "settings.github_repo is missing or empty"),
@@ -598,6 +612,8 @@ _KNOWN_SETTINGS_KEYS: Final[frozenset[str]] = frozenset(
         "skills_dir",
         "enable_auto_create",
         "claim_mode",
+        "upstream_issue_number_field",
+        "default_watchers",
         "stale_pr_close_days",
         "stale_pr_close_mode",
         "enable_sprint_tagging",
@@ -634,6 +650,10 @@ _KNOWN_SETTINGS_KEYS: Final[frozenset[str]] = frozenset(
         "enable_low_conf_email",
         "low_conf_email_mode",
         "low_conf_email_from",
+        "bot_control_enabled",
+        "bot_control_issue",
+        "bot_control_flag_field",
+        "bot_control_interval_field",
     }
 )
 

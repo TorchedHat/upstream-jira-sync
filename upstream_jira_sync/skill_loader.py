@@ -64,6 +64,7 @@ SKILL_TEMPLATE_VARS: Final[dict[str, frozenset[str]]] = {
     "issue_claim_classifier": frozenset(),
     "issue_dedup_matcher": frozenset(),
     "rfc_classifier": frozenset(),
+    "discussion_summarizer": frozenset(),
     "weekly_digest_summary": frozenset(),
     "review_activity_intro": frozenset(),
     "team_classification": frozenset(
